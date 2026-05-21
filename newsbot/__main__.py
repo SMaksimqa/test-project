@@ -59,6 +59,8 @@ def main() -> int:
         print(f"[newsbot] редактор Hermes недоступен ({exc}), резервная сборка")
         message = digest.assemble_plain(date_str, sections)
 
+    message = digest.append_missing(message, sections)
+
     if cfg.dry_run:
         print("\n===== DRY RUN: итоговый дайджест =====\n")
         print(message)

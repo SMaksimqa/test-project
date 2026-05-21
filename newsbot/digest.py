@@ -23,7 +23,9 @@ _EDITOR_SYSTEM = (
     "Структура:\n"
     "1) короткое приветствие с датой;\n"
     "2) разделы по темам — заголовок раздела оберни в <b>…</b>, под ним 3–5 "
-    "пунктов с «•»;\n"
+    "пунктов с «•». ОБЯЗАТЕЛЬНО включи ВСЕ присланные разделы в том же "
+    "порядке и с теми же заголовками и эмодзи; ничего не пропускай и не "
+    "объединяй темы между собой;\n"
     "3) в конце короткое доброе пожелание дня.\n"
     "Используй только HTML-разметку Telegram (<b>, <i>); не используй Markdown "
     "и не используй символы &, < и > вне тегов. Опирайся строго на присланные "
@@ -58,6 +60,19 @@ def compose_digest(hermes: ChatClient, date_str: str, sections: list[Section]) -
         f"сохрани порядок и заголовки разделов:\n\n{blocks}"
     )
     return hermes.complete(_EDITOR_SYSTEM, user, temperature=0.6, max_tokens=1600).strip()
+
+
+def append_missing(message: str, sections: list[Section]) -> str:
+    """Страховка: дописывает разделы, которые редактор пропустил.
+
+    Присутствие раздела проверяем по его эмодзи (он уникален для темы и
+    устойчив к тому, что модель переформулировала текст заголовка).
+    """
+    missing = [s for s in sections if (m := s.title.split()[0]) and m not in message]
+    if not missing:
+        return message
+    extra = "\n\n".join(f"<b>{s.title}</b>\n{s.bullets}" for s in missing)
+    return f"{message}\n\n{extra}"
 
 
 def assemble_plain(date_str: str, sections: list[Section]) -> str:
