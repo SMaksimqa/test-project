@@ -44,6 +44,7 @@ def main() -> int:
     sections: list[digest.Section] = []
     for topic in TOPICS:
         headlines = sources.fetch_headlines(topic.feeds)
+        headlines = sources.filter_by_keywords(headlines, topic.keywords)
         print(f"[newsbot] тема «{topic.title}»: {len(headlines)} заголовков")
         section = digest.summarize_topic(deepseek, topic, headlines)
         if section:

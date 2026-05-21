@@ -84,6 +84,21 @@ def fetch_headlines(feeds: tuple[str, ...], per_feed: int = 8) -> list[Headline]
     return result
 
 
+def filter_by_keywords(
+    headlines: list[Headline], keywords: tuple[str, ...]
+) -> list[Headline]:
+    """Оставляет только заголовки, где встречается хотя бы одно ключевое слово."""
+    if not keywords:
+        return headlines
+    kws = [k.lower() for k in keywords]
+    out = []
+    for h in headlines:
+        text = f"{h.title} {h.summary}".lower()
+        if any(k in text for k in kws):
+            out.append(h)
+    return out
+
+
 def format_for_prompt(headlines: list[Headline]) -> str:
     lines = []
     for i, h in enumerate(headlines, 1):
