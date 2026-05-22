@@ -34,4 +34,4 @@ def usd_rub_bullet() -> str | None:
         move = f"снижается, −{_fmt(abs(delta))} ₽ за день"
     else:
         move = "почти без изменений"
-    return f"• Курс ЦБ: {_fmt(cur)} ₽ за доллар ({move}). <a href=\"{_CBR}\">источник</a>"
+    return f"• Курс ЦБ: {_fmt(cur)} ₽ за доллар ({move}). <a href=\"{CBR_URL}\">источник</a>"

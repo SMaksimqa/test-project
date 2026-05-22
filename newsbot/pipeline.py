@@ -92,7 +92,11 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
             continue
 
         if topic.key == "dollar":
-            rate_line = rates.usd_rub_bullet()
+            try:
+                rate_line = rates.usd_rub_bullet()
+            except Exception as exc:  # noqa: BLE001 — курс необязателен, дайджест важнее
+                print(f"[pipeline] курс ЦБ пропущен ({exc})")
+                rate_line = None
             if rate_line:
                 section.bullets = f"{rate_line}\n{section.bullets}"
                 allowed.add(rates.CBR_URL)
