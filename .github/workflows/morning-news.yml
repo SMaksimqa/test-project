@@ -2,8 +2,10 @@ name: Morning News
 
 on:
   schedule:
-    # GitHub Actions использует UTC. 06:00 UTC = 09:00 МСК (UTC+3).
-    - cron: "0 6 * * *"
+    # GitHub Actions использует UTC. 06:05 UTC = 09:05 МСК (UTC+3).
+    # Не ставим ровно на :00 — начало часа перегружено, запуски там
+    # часто задерживаются или пропускаются (рекомендация GitHub).
+    - cron: "5 6 * * *"
   workflow_dispatch: {}
 
 jobs:
