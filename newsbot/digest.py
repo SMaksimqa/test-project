@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .config import Topic
@@ -14,7 +15,12 @@ _SUMMARIZER_SYSTEM = (
     "предоставленных материалов, без выдумок и без воды. По умолчанию 3–5 "
     "пунктов, но если в указании задано другое количество — точно следуй ему. "
     "Каждый пункт на русском языке — одно ёмкое предложение, начинается с «•». "
-    "Не добавляй вступлений и заголовков."
+    "Не добавляй вступлений и заголовков.\n"
+    "Если у заголовка указана строка «Ссылка: URL», в конце соответствующего "
+    "пункта добавь ссылку на источник в виде HTML-тега Telegram: "
+    '<a href="URL">источник</a>, скопировав URL дословно из этой строки. '
+    "Не придумывай и не изменяй ссылки; если ссылки у заголовка нет — не "
+    "добавляй её."
 )
 
 _EDITOR_SYSTEM = (
@@ -23,15 +29,19 @@ _EDITOR_SYSTEM = (
     "русском языке.\n"
     "Структура:\n"
     "1) короткое приветствие с датой;\n"
-    "2) разделы по темам — заголовок раздела оберни в <b>…</b>, под ним 3–5 "
-    "пунктов с «•». ОБЯЗАТЕЛЬНО включи ВСЕ присланные разделы в том же "
+    "2) разделы по темам — заголовок раздела оберни в <b>…</b>, под ним "
+    "пункты с «•». ОБЯЗАТЕЛЬНО включи ВСЕ присланные разделы в том же "
     "порядке и с теми же заголовками и эмодзи; ничего не пропускай и не "
     "объединяй темы между собой;\n"
     "3) в конце короткое доброе пожелание дня.\n"
-    "Используй только HTML-разметку Telegram (<b>, <i>); не используй Markdown "
-    "и не используй символы &, < и > вне тегов. Опирайся строго на присланные "
-    "тезисы, ничего не выдумывай. Уложись примерно в 3500 символов."
+    "Используй только HTML-разметку Telegram (<b>, <i>, <a href=\"…\">); не "
+    "используй Markdown и не используй символы &, < и > вне тегов. Сохраняй "
+    'теги <a href="…">источник</a> дословно: не меняй URL и не удаляй ссылки, '
+    "оставляй их в конце пунктов. Опирайся строго на присланные тезисы, ничего "
+    "не выдумывай. Уложись примерно в 3500 символов."
 )
+
+_LINK_RE = re.compile(r"""<a\s+href=(["'])(.*?)\1[^>]*>(.*?)</a>""", re.DOTALL | re.IGNORECASE)
 
 
 @dataclass
@@ -52,6 +62,77 @@ def summarize_topic(
     user += "\nЗаголовки:\n" + format_for_prompt(headlines)
     bullets = deepseek.complete(_SUMMARIZER_SYSTEM, user, temperature=0.3, max_tokens=500)
     return Section(title=topic.title, bullets=bullets.strip())
+
+
+def sanitize_links(text: str, allowed: set[str]) -> str:
+    """Оставляет только ссылки из набора allowed; чужие/выдуманные — разворачивает в текст."""
+
+    def repl(m: re.Match[str]) -> str:
+        url = m.group(2).strip()
+        inner = m.group(3)
+        if url in allowed:
+            return f'<a href="{url}">{inner}</a>'
+        return inner  # ссылки нет в списке источников — убираем тег, текст оставляем
+
+    return _LINK_RE.sub(repl, text)
+
+
+_TOUR_LINE_SYSTEM = (
+    "Ты сжимаешь рекламный пост тревел-канала в ОДНУ короткую строку на русском "
+    "для семейного дайджеста. Укажи направление и цену в рублях, если она есть "
+    "в тексте, плюс одну ключевую деталь (даты, звёзды отеля, «всё включено»). "
+    "Без эмодзи-мусора, хэштегов и призывов подписаться. Не выдумывай цену, "
+    "если её нет в тексте. Верни только строку — без «•» и без ссылок."
+)
+
+_VISA_LINE_SYSTEM = (
+    "Сожми новость про визы и правила въезда в одну короткую строку на русском: "
+    "какая страна и что именно изменилось (ввела/отменила визу, безвиз, срок "
+    "пребывания). Только факт, без воды, без «•» и без ссылок."
+)
+
+
+def _deal_line(deepseek: ChatClient, post: Headline | None, label: str) -> str | None:
+    if post is None:
+        return None
+    text = deepseek.complete(_TOUR_LINE_SYSTEM, post.title, temperature=0.3, max_tokens=160)
+    text = text.strip().lstrip("•").strip()
+    if not text:
+        return None
+    link = f' <a href="{post.link}">подробнее</a>' if post.link else ""
+    return f"• {label}: {text}{link}"
+
+
+def build_tourism_section(
+    deepseek: ChatClient,
+    title: str,
+    visa: Headline | None,
+    flight: Headline | None,
+    tour: Headline | None,
+) -> Section | None:
+    """Туризм тремя строками: новость про визы, авиабилет, тур."""
+    lines: list[str] = []
+
+    if visa is not None:
+        src = f"{visa.title}. {visa.summary}".strip()
+        text = deepseek.complete(_VISA_LINE_SYSTEM, src, temperature=0.3, max_tokens=160)
+        text = text.strip().lstrip("•").strip()
+        if text:
+            link = f' <a href="{visa.link}">источник</a>' if visa.link else ""
+            lines.append(f"• Визы: {text}{link}")
+
+    flight_line = _deal_line(deepseek, flight, "Авиабилет")
+    if flight_line:
+        lines.append(flight_line)
+
+    tour_line = _deal_line(deepseek, tour, "Тур")
+    if tour_line:
+        lines.append(tour_line)
+
+    if not lines:
+        print("[digest] раздел «Туризм»: нет данных ни по одной строке")
+        return None
+    return Section(title=title, bullets="\n".join(lines))
 
 
 def compose_digest(hermes: ChatClient, date_str: str, sections: list[Section]) -> str:

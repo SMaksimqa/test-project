@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from xml.etree import ElementTree as ET
 
 import requests
@@ -105,5 +106,79 @@ def format_for_prompt(headlines: list[Headline]) -> str:
         line = f"{i}. {h.title}"
         if h.summary:
             line += f" — {h.summary}"
+        if h.link:
+            line += f"\n   Ссылка: {h.link}"
         lines.append(line)
     return "\n".join(lines)
+
+
+class _TgPreviewParser(HTMLParser):
+    """Достаёт текст и ссылки постов из веб-предпросмотра t.me/s/<канал>."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.posts: list[tuple[str, str]] = []  # (текст, ссылка)
+        self._post_url = ""
+        self._buy_url = ""
+        self._in_text = False
+        self._depth = 0
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        d = {k: (v or "") for k, v in attrs}
+        cls = d.get("class", "")
+        if tag == "div" and "data-post" in d:
+            self._flush()
+            self._post_url = f"https://t.me/{d['data-post']}"
+            self._buy_url = ""
+        if tag == "div" and "tgme_widget_message_text" in cls:
+            self._in_text = True
+            self._depth = 1
+            self._parts = []
+            return
+        if not self._in_text:
+            return
+        self._depth += 1
+        if tag == "br":
+            self._parts.append(" ")
+        if tag == "a":
+            href = d.get("href", "")
+            if href.startswith("http") and "t.me/" not in href and not self._buy_url:
+                self._buy_url = href
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._in_text and tag == "div":
+            self._depth -= 1
+            if self._depth <= 0:
+                self._in_text = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_text:
+            self._parts.append(data)
+
+    def _flush(self) -> None:
+        text = _clean("".join(self._parts), limit=400)
+        if self._post_url and text:
+            self.posts.append((text, self._buy_url or self._post_url))
+        self._parts = []
+        self._post_url = ""
+
+    def close(self) -> None:  # noqa: D401
+        super().close()
+        self._flush()
+
+
+def fetch_telegram_channel(channel: str, limit: int = 5) -> list[Headline]:
+    """Свежие посты публичного канала через t.me/s/<канал> (новые — первыми)."""
+    url = f"https://t.me/s/{channel}"
+    try:
+        resp = requests.get(url, headers={"User-Agent": _UA}, timeout=20)
+        resp.raise_for_status()
+        parser = _TgPreviewParser()
+        parser.feed(resp.text)
+        parser.close()
+    except Exception as exc:  # noqa: BLE001 — недоступный канал не должен ронять бот
+        print(f"[sources] канал недоступен t.me/s/{channel}: {exc}")
+        return []
+    posts = parser.posts[-limit:][::-1]  # предпросмотр идёт от старых к новым
+    return [Headline(title=text, summary="", link=link) for text, link in posts]

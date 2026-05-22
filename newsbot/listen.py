@@ -1,44 +1,61 @@
 """Слушатель Telegram: по слову «новости» в чате присылает свежую сводку.
 
-Работает через long-polling (getUpdates) и должен быть запущен постоянно
-(24/7) — например, на VPS под systemd или в контейнере. Отвечает в тот же
-чат, откуда пришёл триггер, поэтому подходит и для групповых чатов.
+Два режима:
+  • run()       — постоянный long-polling (для VPS/контейнера, ответ мгновенный);
+  • poll_once() — однократная проверка (для GitHub Actions по расписанию,
+                  ответ с задержкой до интервала запуска).
 
+Отвечает в тот же чат, откуда пришёл триггер, поэтому подходит и для групп.
 Важно для групп: у бота должен быть выключен режим приватности
-(@BotFather → /setprivacy → Disable), иначе он не видит обычные сообщения,
-а только команды и ответы на себя.
+(@BotFather → /setprivacy → Disable), иначе он не видит обычные сообщения.
+
+Нельзя запускать оба режима одновременно: и long-polling, и опрос по
+расписанию читают один и тот же поток getUpdates и будут мешать друг другу.
 """
 
 from __future__ import annotations
 
 import re
+import sys
 import time
 
 import requests
 
 from . import pipeline, telegram
-from .config import load_config
+from .config import Config, load_config
+from .llm import ChatClient
 
 # Слово «новости» как отдельное слово; срабатывает и на команду «/новости».
 _TRIGGER = re.compile(r"(?<!\w)новости(?!\w)", re.IGNORECASE)
 _BUSY = "Собираю свежую сводку, это займёт около минуты…"
 _EMPTY = "Сейчас не удалось собрать новости, попробуйте чуть позже."
+# В режиме опроса игнорируем триггеры старше этого возраста (защита от старого
+# хвоста сообщений при первом запуске). Чуть больше интервала опроса.
+_MAX_AGE_SEC = 1800
 
 
 def _is_trigger(text: str) -> bool:
     return bool(text) and _TRIGGER.search(text) is not None
 
 
+def _respond(cfg: Config, deepseek: ChatClient, hermes: ChatClient, chat_id: str) -> None:
+    print(f"[listen] триггер из чата {chat_id}")
+    telegram.send_message(cfg.telegram_token, chat_id, _BUSY)
+    message = pipeline.generate_digest(deepseek, hermes)
+    telegram.send_message(cfg.telegram_token, chat_id, message or _EMPTY)
+
+
 def run() -> None:
+    """Постоянный long-polling. Подходит для всегда-онлайн хостинга (VPS)."""
     cfg = load_config()
     deepseek, hermes = pipeline.make_clients(cfg)
     api = f"https://api.telegram.org/bot{cfg.telegram_token}"
     offset: int | None = None
-    print("[listen] запущен, жду слово «новости»…")
+    print("[listen] long-polling запущен, жду слово «новости»…")
 
     while True:
         try:
-            params = {"timeout": 50, "allowed_updates": '["message"]'}
+            params: dict[str, object] = {"timeout": 50, "allowed_updates": '["message"]'}
             if offset is not None:
                 params["offset"] = offset
             resp = requests.get(f"{api}/getUpdates", params=params, timeout=65)
@@ -54,15 +71,54 @@ def run() -> None:
             msg = upd.get("message")
             if not msg or not _is_trigger(msg.get("text", "")):
                 continue
-            chat_id = str(msg["chat"]["id"])
-            print(f"[listen] триггер из чата {chat_id}")
             try:
-                telegram.send_message(cfg.telegram_token, chat_id, _BUSY)
-                message = pipeline.generate_digest(deepseek, hermes)
-                telegram.send_message(cfg.telegram_token, chat_id, message or _EMPTY)
+                _respond(cfg, deepseek, hermes, str(msg["chat"]["id"]))
             except Exception as exc:  # noqa: BLE001 — один сбой не должен ронять слушатель
-                print(f"[listen] ошибка при ответе в чат {chat_id}: {exc}")
+                print(f"[listen] ошибка ответа: {exc}")
+
+
+def poll_once() -> None:
+    """Однократная проверка для запуска по расписанию (GitHub Actions)."""
+    cfg = load_config()
+    api = f"https://api.telegram.org/bot{cfg.telegram_token}"
+
+    resp = requests.get(
+        f"{api}/getUpdates", params={"timeout": 0, "allowed_updates": '["message"]'}, timeout=30
+    )
+    resp.raise_for_status()
+    updates = resp.json().get("result", [])
+    if not updates:
+        print("[listen] новых сообщений нет")
+        return
+
+    now = time.time()
+    latest: dict[str, dict] = {}  # последний триггер в каждом чате
+    for upd in updates:
+        msg = upd.get("message")
+        if not msg or not _is_trigger(msg.get("text", "")):
+            continue
+        if now - msg.get("date", 0) > _MAX_AGE_SEC:
+            continue  # слишком старое — не отвечаем (но ниже подтвердим offset)
+        latest[str(msg["chat"]["id"])] = msg
+
+    if latest:
+        deepseek, hermes = pipeline.make_clients(cfg)
+        for chat_id in latest:
+            try:
+                _respond(cfg, deepseek, hermes, chat_id)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[listen] ошибка ответа в чат {chat_id}: {exc}")
+    else:
+        print("[listen] свежих триггеров «новости» нет")
+
+    # Подтверждаем offset, чтобы следующий запуск не обрабатывал эти сообщения снова.
+    last_id = max(upd["update_id"] for upd in updates)
+    requests.get(f"{api}/getUpdates", params={"offset": last_id + 1, "timeout": 0}, timeout=30)
+    print(f"[listen] обработано обновлений: {len(updates)}, offset подтверждён")
 
 
 if __name__ == "__main__":
-    run()
+    if "poll" in sys.argv[1:]:
+        poll_once()
+    else:
+        run()
