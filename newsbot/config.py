@@ -20,6 +20,9 @@ class Topic:
 TOURISM_FLIGHT_CHANNEL = "ticketsthailand"
 TOURISM_TOUR_CHANNEL = "vandroukitours"
 
+# Онлайн веб-камеры Паттайи — добавляем ссылкой в раздел «Туризм».
+TOURISM_WEBCAM_URL = "https://ioc.pattaya.go.th/live-cctv/CC-024"
+
 
 # Темы дайджеста и их RSS-источники (русскоязычные, без ключей API).
 # Если лента недоступна, она пропускается, остальные продолжают работать.

@@ -9,6 +9,7 @@ from .config import (
     TOPICS,
     TOURISM_FLIGHT_CHANNEL,
     TOURISM_TOUR_CHANNEL,
+    TOURISM_WEBCAM_URL,
     Config,
     Topic,
 )
@@ -65,7 +66,15 @@ def _tourism_section(
         f"[pipeline] тема «{topic.title}»: визы={bool(visa)} "
         f"билет={bool(flight)} тур={bool(tour)}"
     )
-    return digest.build_tourism_section(deepseek, topic.title, visa, flight, tour)
+    section = digest.build_tourism_section(deepseek, topic.title, visa, flight, tour)
+
+    # Ссылка на веб-камеры Паттайи добавляется всегда (статичная).
+    webcam = f'• Веб-камеры Паттайи: <a href="{TOURISM_WEBCAM_URL}">смотреть онлайн</a>'
+    allowed.add(TOURISM_WEBCAM_URL)
+    if section is None:
+        return digest.Section(title=topic.title, bullets=webcam)
+    section.bullets = f"{section.bullets}\n{webcam}"
+    return section
 
 
 def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
@@ -88,18 +97,23 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
         allowed.update(h.link for h in headlines if h.link)
         print(f"[pipeline] тема «{topic.title}»: {len(headlines)} заголовков")
         section = digest.summarize_topic(deepseek, topic, headlines)
-        if section is None:
-            continue
 
         if topic.key == "dollar":
             try:
-                rate_line = rates.usd_rub_bullet()
-            except Exception as exc:  # noqa: BLE001 — курс необязателен, дайджест важнее
-                print(f"[pipeline] курс ЦБ пропущен ({exc})")
-                rate_line = None
-            if rate_line:
-                section.bullets = f"{rate_line}\n{section.bullets}"
-                allowed.add(rates.CBR_URL)
+                rate_lines, rate_links = rates.rate_bullets()
+            except Exception as exc:  # noqa: BLE001 — курсы необязательны, дайджест важнее
+                print(f"[pipeline] курсы валют пропущены ({exc})")
+                rate_lines, rate_links = [], set()
+            if rate_lines:
+                allowed |= rate_links
+                prefix = "\n".join(rate_lines)
+                if section is None:
+                    section = digest.Section(title=topic.title, bullets=prefix)
+                else:
+                    section.bullets = f"{prefix}\n{section.bullets}"
+
+        if section is None:
+            continue
 
         sections.append(section)
 
