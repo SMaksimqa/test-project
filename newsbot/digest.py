@@ -66,6 +66,37 @@ def sanitize_links(text: str, allowed: set[str]) -> str:
     return _LINK_RE.sub(repl, text)
 
 
+# Теги, которые Telegram разрешает в режиме HTML и которые мы сами расставляем.
+_SAFE_TAG_RE = re.compile(r'</?[bi]>|<a href="[^"]*">|</a>', re.IGNORECASE)
+_HREF_RE = re.compile(r'<a href="([^"]*)">', re.IGNORECASE)
+
+
+def _escape_text(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def harden_html(text: str) -> str:
+    """Делает текст валидным Telegram-HTML.
+
+    Экранирует «голые» &, <, > в тексте и & внутри href, сохраняя наши теги
+    (<b>, <i>, <a href>). Без этого Telegram отвечает 400, и сообщение уходит
+    как plain-текст с «сырыми» тегами.
+    """
+    out: list[str] = []
+    pos = 0
+    for m in _SAFE_TAG_RE.finditer(text):
+        out.append(_escape_text(text[pos : m.start()]))
+        tag = m.group(0)
+        href = _HREF_RE.match(tag)
+        if href:
+            safe = href.group(1).replace("&", "&amp;")
+            tag = f'<a href="{safe}">'
+        out.append(tag)
+        pos = m.end()
+    out.append(_escape_text(text[pos:]))
+    return "".join(out)
+
+
 _FLIGHT_LINE_SYSTEM = (
     "Ты сжимаешь пост авиа-канала в ОДНУ короткую строку на русском. Укажи "
     "маршрут (откуда → куда), цену в рублях (она есть в тексте) и одну деталь "
@@ -108,9 +139,9 @@ def build_tourism_section(
     title: str,
     visa: Headline | None,
     flight: Headline | None,
-    tour: Headline | None,
+    tours: list[Headline],
 ) -> Section | None:
-    """Туризм тремя строками: новость про визы, авиабилет, тур."""
+    """Туризм: новость про визы, авиабилет (из Москвы) и до трёх туров."""
     lines: list[str] = []
 
     if visa is not None:
@@ -125,9 +156,10 @@ def build_tourism_section(
     if flight_line:
         lines.append(flight_line)
 
-    tour_line = _deal_line(deepseek, tour, "Тур", _TOUR_LINE_SYSTEM)
-    if tour_line:
-        lines.append(tour_line)
+    for tour in tours:
+        tour_line = _deal_line(deepseek, tour, "Тур", _TOUR_LINE_SYSTEM)
+        if tour_line:
+            lines.append(tour_line)
 
     if not lines:
         print("[digest] раздел «Туризм»: нет данных ни по одной строке")

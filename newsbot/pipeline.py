@@ -8,7 +8,8 @@ from . import digest, rates, sources
 from .config import (
     TOPICS,
     TOURISM_FLIGHT_CHANNEL,
-    TOURISM_TOUR_CHANNEL,
+    TOURISM_TOUR_CHANNELS,
+    TOURISM_TOUR_SEARCH_URL,
     TOURISM_WEBCAM_URL,
     Config,
     Topic,
@@ -56,53 +57,93 @@ _FLIGHT_PRIORITY: tuple[tuple[str, ...], ...] = (
     ("вьетнам", "vietnam", "ханой", "нячанг", "дананг", "фукуок", "хошимин"),
 )
 
+# Категории туров в порядке приоритета: Таиланд → Турция → Вьетнам → прочее.
+_TOUR_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Таиланд", ("таиланд", "тайланд", "бангкок", "пхукет", "паттай", "краби", "самуи")),
+    ("Турция", ("турци", "анталь", "кемер", "белек", "аланья", "сиде", "мармарис")),
+    ("Вьетнам", ("вьетнам", "нячанг", "фукуок", "дананг", "ханой", "фантьет")),
+)
+
+
+def _from_moscow(text: str) -> bool:
+    """Вылет/прилёт связан с Москвой (другие города РФ отсекаем)."""
+    return "москв" in text.lower()
+
 
 def _pick_flight(posts: list[sources.Headline]) -> sources.Headline | None:
-    """Выбирает билет по приоритету направлений (Бангкок — в первую очередь)."""
+    """Билет только из Москвы, по приоритету направлений (Бангкок — первым)."""
+    posts = [p for p in posts if _from_moscow(p.title)]
     for group in _FLIGHT_PRIORITY:
         for post in posts:  # posts идут от свежих к старым
             if any(kw in post.title.lower() for kw in group):
                 return post
-    return _first(posts)  # нет приоритетных — берём самый свежий
+    return _first(posts)
 
 
-def _pick_tour(posts: list[sources.Headline]) -> sources.Headline | None:
-    """Выбирает тур с ОБЯЗАТЕЛЬНОЙ ценой: приоритет горящим и самым дешёвым."""
-    priced = [(p, sources.min_price_rub(p.title)) for p in posts]
-    priced = [(p, v) for p, v in priced if v is not None]
-    if not priced:
-        return None  # без цены тур не показываем
-    hot = [(p, v) for p, v in priced if "горящ" in p.title.lower()]
-    pool = hot or priced
-    pool.sort(key=lambda pv: pv[1])  # самый дешёвый первым
-    return pool[0][0]
+def _tour_category(text: str) -> str:
+    low = text.lower()
+    for name, kws in _TOUR_CATEGORIES:
+        if any(k in low for k in kws):
+            return name
+    return "Другое"
+
+
+def _pick_tours(posts: list[sources.Headline], limit: int = 3) -> list[sources.Headline]:
+    """До трёх туров из Москвы, с ценой, по одному на направление (приоритет выше)."""
+    by_cat: dict[str, list[sources.Headline]] = {}
+    for post in posts:
+        if not _from_moscow(post.title) or sources.min_price_rub(post.title) is None:
+            continue
+        by_cat.setdefault(_tour_category(post.title), []).append(post)
+
+    def best(group: list[sources.Headline]) -> sources.Headline:
+        hot = [p for p in group if "горящ" in p.title.lower()]
+        return min(hot or group, key=lambda p: sources.min_price_rub(p.title) or 0)
+
+    priority = [name for name, _ in _TOUR_CATEGORIES]
+    order = priority + [c for c in by_cat if c not in priority]
+    result: list[sources.Headline] = []
+    for cat in order:
+        if cat in by_cat and len(result) < limit:
+            result.append(best(by_cat[cat]))
+    return result
 
 
 def _tourism_section(
     deepseek: ChatClient, topic: Topic, allowed: set[str]
 ) -> digest.Section | None:
-    """Туризм: новость про визы (из лент) + билет и тур (из Telegram-каналов)."""
+    """Туризм: визы (ленты) + билет и до трёх туров (Telegram-каналы)."""
     visa_news = sources.filter_by_keywords(
         sources.fetch_headlines(topic.feeds), topic.keywords
     )
     visa = _first(visa_news)
     flight = _pick_flight(sources.fetch_telegram_channel(TOURISM_FLIGHT_CHANNEL, limit=25))
-    tour = _pick_tour(sources.fetch_telegram_channel(TOURISM_TOUR_CHANNEL, limit=25))
-    for h in (visa, flight, tour):
+
+    tour_posts: list[sources.Headline] = []
+    for channel in TOURISM_TOUR_CHANNELS:
+        tour_posts += sources.fetch_telegram_channel(channel, limit=20)
+    tours = _pick_tours(tour_posts)
+
+    for h in [visa, flight, *tours]:
         if h and h.link:
             allowed.add(h.link)
     print(
         f"[pipeline] тема «{topic.title}»: визы={bool(visa)} "
-        f"билет={bool(flight)} тур={bool(tour)}"
+        f"билет={bool(flight)} туров={len(tours)}"
     )
-    section = digest.build_tourism_section(deepseek, topic.title, visa, flight, tour)
+    section = digest.build_tourism_section(deepseek, topic.title, visa, flight, tours)
 
-    # Ссылка на веб-камеры Паттайи добавляется всегда (статичная).
-    webcam = f'• Веб-камеры Паттайи: <a href="{TOURISM_WEBCAM_URL}">смотреть онлайн</a>'
+    extra = []
+    if not tours:  # туров с ценой не нашли — даём ссылку на поиск
+        extra.append(f'• Туры: подобрать на <a href="{TOURISM_TOUR_SEARCH_URL}">onlinetours.ru</a>')
+        allowed.add(TOURISM_TOUR_SEARCH_URL)
+    extra.append(f'• Веб-камеры Паттайи: <a href="{TOURISM_WEBCAM_URL}">смотреть онлайн</a>')
     allowed.add(TOURISM_WEBCAM_URL)
+
+    extra_text = "\n".join(extra)
     if section is None:
-        return digest.Section(title=topic.title, bullets=webcam)
-    section.bullets = f"{section.bullets}\n{webcam}"
+        return digest.Section(title=topic.title, bullets=extra_text)
+    section.bullets = f"{section.bullets}\n{extra_text}"
     return section
 
 
@@ -121,6 +162,21 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
                 sections.append(section)
             continue
 
+        if topic.key == "dollar":
+            # Только курсы (ЦБ + Камком) с прямыми ссылками — без новостных лент.
+            try:
+                rate_lines, rate_links = rates.rate_bullets()
+            except Exception as exc:  # noqa: BLE001 — курсы необязательны, дайджест важнее
+                print(f"[pipeline] курсы валют пропущены ({exc})")
+                rate_lines, rate_links = [], set()
+            print(f"[pipeline] тема «{topic.title}»: курсов {len(rate_lines)}")
+            if rate_lines:
+                allowed |= rate_links
+                sections.append(
+                    digest.Section(title=topic.title, bullets="\n".join(rate_lines))
+                )
+            continue
+
         headlines = sources.fetch_headlines(topic.feeds)
         headlines = sources.filter_by_keywords(headlines, topic.keywords)
         if topic.key == "gadgets":
@@ -131,21 +187,6 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
         allowed.update(h.link for h in headlines if h.link)
         print(f"[pipeline] тема «{topic.title}»: {len(headlines)} заголовков")
         section = digest.summarize_topic(deepseek, topic, headlines)
-
-        if topic.key == "dollar":
-            try:
-                rate_lines, rate_links = rates.rate_bullets()
-            except Exception as exc:  # noqa: BLE001 — курсы необязательны, дайджест важнее
-                print(f"[pipeline] курсы валют пропущены ({exc})")
-                rate_lines, rate_links = [], set()
-            if rate_lines:
-                allowed |= rate_links
-                prefix = "\n".join(rate_lines)
-                if section is None:
-                    section = digest.Section(title=topic.title, bullets=prefix)
-                else:
-                    section.bullets = f"{prefix}\n{section.bullets}"
-
         if section is None:
             continue
 
@@ -156,4 +197,5 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
         return None
 
     message = digest.compose_digest(hermes, date_str, sections)
-    return digest.sanitize_links(message, allowed)
+    message = digest.sanitize_links(message, allowed)
+    return digest.harden_html(message)

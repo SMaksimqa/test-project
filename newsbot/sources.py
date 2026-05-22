@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import html
 import re
 from dataclasses import dataclass
@@ -40,12 +41,55 @@ def _find(item: ET.Element, *names: str) -> ET.Element | None:
     return None
 
 
+_GNEWS_RE = re.compile(r"^https?://news\.google\.com/(?:rss/)?articles/([A-Za-z0-9_\-]+)")
+
+
+def _direct_link(url: str) -> str:
+    """Пытается достать прямую ссылку из редирект-ссылки Google News.
+
+    Старый формат хранит исходный URL внутри base64 как protobuf-поле с длиной —
+    читаем его (без сети). Новый формат URL не содержит — оставляем как есть.
+    """
+    m = _GNEWS_RE.match(url)
+    if not m:
+        return url
+    blob = m.group(1)
+    try:
+        raw = base64.urlsafe_b64decode(blob + "=" * (-len(blob) % 4))
+    except Exception:  # noqa: BLE001
+        return url
+
+    i, n = 0, len(raw)
+    while i < n:
+        if raw[i] != 0x22:  # ищем поле 4 (length-delimited) — там лежит URL
+            i += 1
+            continue
+        i += 1
+        length = shift = 0
+        while i < n:  # varint-длина
+            b = raw[i]
+            i += 1
+            length |= (b & 0x7F) << shift
+            if not b & 0x80:
+                break
+            shift += 7
+        candidate = raw[i : i + length]
+        i += length
+        try:
+            text = candidate.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if text.startswith("http") and "news.google.com" not in text and len(text) >= 12:
+            return text
+    return url
+
+
 def _link(item: ET.Element) -> str:
     el = _find(item, "link")
     if el is None:
         return ""
     # RSS: текст элемента; Atom: атрибут href.
-    return (el.text or el.get("href") or "").strip()
+    return _direct_link((el.text or el.get("href") or "").strip())
 
 
 def _parse(content: bytes) -> list[Headline]:

@@ -18,7 +18,9 @@ class Topic:
 # Telegram-каналы для раздела «Туризм» (читаются через публичный веб-предпросмотр
 # t.me/s/<канал>, без токенов). Подаются как отдельные строки: билет и тур.
 TOURISM_FLIGHT_CHANNEL = "ticketsthailand"
-TOURISM_TOUR_CHANNEL = "vandroukitours"
+TOURISM_TOUR_CHANNELS = ("vandroukitours", "hkt_bkk", "vandroukiru")
+# Поиск туров — запасная ссылка, если в каналах нет туров с ценой.
+TOURISM_TOUR_SEARCH_URL = "https://www.onlinetours.ru/"
 
 # Онлайн веб-камеры Паттайи — добавляем ссылкой в раздел «Туризм».
 TOURISM_WEBCAM_URL = "https://ioc.pattaya.go.th/live-cctv/CC-024"

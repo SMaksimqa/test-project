@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import time
+from xml.etree import ElementTree as ET
 
 import requests
 
@@ -16,6 +17,8 @@ import requests
 CBR_URL = "https://www.cbr.ru/currency_base/daily/"
 # JSON-зеркало ЦБ: в одном ответе и текущее значение, и предыдущее (для дельты).
 _CBR_JSON = "https://www.cbr-xml-daily.ru/daily_json.js"
+# Официальный XML ЦБ — запасной источник, если зеркало недоступно.
+_CBR_XML = "https://www.cbr.ru/scripts/XML_daily.asp"
 
 KAMKOM_URL = "https://bankiros.ru/bank/kamkombank/currency/moskva"
 _KAMKOM_OFFICE = "Чертановская"  # отделение на юге Москвы
@@ -34,18 +37,44 @@ def _fmt(value: float) -> str:
     return f"{value:.2f}".replace(".", ",")
 
 
+def _cbr_from_json() -> tuple[float, float] | None:
+    """Текущее и предыдущее значение USD из JSON-зеркала ЦБ."""
+    resp = requests.get(_CBR_JSON, timeout=15)
+    resp.raise_for_status()
+    usd = resp.json()["Valute"]["USD"]
+    return float(usd["Value"]), float(usd["Previous"])
+
+
+def _cbr_from_xml() -> tuple[float, float] | None:
+    """Текущее значение USD из официального XML ЦБ (без предыдущего)."""
+    resp = requests.get(_CBR_XML, timeout=15)
+    resp.raise_for_status()
+    root = ET.fromstring(resp.content)  # bytes: учитывает windows-1251 из заголовка
+    for valute in root.findall("Valute"):
+        if valute.findtext("CharCode") != "USD":
+            continue
+        nominal = int(valute.findtext("Nominal") or "1")
+        value = float((valute.findtext("Value") or "0").replace(",", "."))
+        if nominal > 0:
+            cur = value / nominal
+            return cur, cur  # дельты нет — считаем «без изменений»
+    return None
+
+
 def _cbr_bullet() -> str | None:
-    """Курс USD ЦБ из JSON-зеркала: текущее значение и изменение за день."""
-    try:
-        resp = requests.get(_CBR_JSON, timeout=15)
-        resp.raise_for_status()
-        usd = resp.json()["Valute"]["USD"]
-        cur = float(usd["Value"])
-        prev = float(usd["Previous"])
-    except Exception as exc:  # noqa: BLE001
-        print(f"[rates] курс ЦБ недоступен: {exc}")
+    """Курс USD ЦБ: зеркало (с дельтой за день), при сбое — официальный XML."""
+    pair = None
+    for source in (_cbr_from_json, _cbr_from_xml):
+        try:
+            pair = source()
+            if pair:
+                break
+        except Exception as exc:  # noqa: BLE001
+            print(f"[rates] источник курса ЦБ недоступен ({source.__name__}): {exc}")
+    if not pair:
         return None
 
+    cur, prev = pair
     delta = cur - prev
     if delta > 0.005:
         move = f", растёт +{_fmt(delta)} ₽ за день"
