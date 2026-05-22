@@ -23,22 +23,11 @@ _SUMMARIZER_SYSTEM = (
     "добавляй её."
 )
 
-_EDITOR_SYSTEM = (
-    "Ты — ведущий утренней новостной рассылки в Telegram. На основе готовых "
-    "тезисов по темам составь тёплый, живой и лаконичный утренний дайджест на "
-    "русском языке.\n"
-    "Структура:\n"
-    "1) короткое приветствие с датой;\n"
-    "2) разделы по темам — заголовок раздела оберни в <b>…</b>, под ним "
-    "пункты с «•». ОБЯЗАТЕЛЬНО включи ВСЕ присланные разделы в том же "
-    "порядке и с теми же заголовками и эмодзи; ничего не пропускай и не "
-    "объединяй темы между собой;\n"
-    "3) в конце короткое доброе пожелание дня.\n"
-    "Используй только HTML-разметку Telegram (<b>, <i>, <a href=\"…\">); не "
-    "используй Markdown и не используй символы &, < и > вне тегов. Сохраняй "
-    'теги <a href="…">источник</a> дословно: не меняй URL и не удаляй ссылки, '
-    "оставляй их в конце пунктов. Опирайся строго на присланные тезисы, ничего "
-    "не выдумывай. Уложись примерно в 3500 символов."
+_GREETER_SYSTEM = (
+    "Ты — ведущий тёплой утренней рассылки. Верни РОВНО две строки на русском "
+    "без Markdown и без кавычек: первая — короткое приветствие с датой; вторая "
+    "— короткое доброе пожелание дня. Допускается по одному эмодзи в строке. "
+    "Никаких других строк и пояснений."
 )
 
 _LINK_RE = re.compile(r"""<a\s+href=(["'])(.*?)\1[^>]*>(.*?)</a>""", re.DOTALL | re.IGNORECASE)
@@ -77,12 +66,21 @@ def sanitize_links(text: str, allowed: set[str]) -> str:
     return _LINK_RE.sub(repl, text)
 
 
+_FLIGHT_LINE_SYSTEM = (
+    "Ты сжимаешь пост авиа-канала в ОДНУ короткую строку на русском. Укажи "
+    "маршрут (откуда → куда), цену в рублях (она есть в тексте) и одну деталь "
+    "(даты или туда-обратно / в одну сторону). Без эмодзи-мусора, хэштегов и "
+    "призывов подписаться. Не выдумывай данные. Верни только строку — без «•» "
+    "и без ссылок."
+)
+
 _TOUR_LINE_SYSTEM = (
-    "Ты сжимаешь рекламный пост тревел-канала в ОДНУ короткую строку на русском "
-    "для семейного дайджеста. Укажи направление и цену в рублях, если она есть "
-    "в тексте, плюс одну ключевую деталь (даты, звёзды отеля, «всё включено»). "
-    "Без эмодзи-мусора, хэштегов и призывов подписаться. Не выдумывай цену, "
-    "если её нет в тексте. Верни только строку — без «•» и без ссылок."
+    "Ты сжимаешь пост тревел-канала о туре в ОДНУ короткую строку на русском "
+    "для семейного дайджеста. ОБЯЗАТЕЛЬНО укажи: страну и город/курорт, отель "
+    "и его звёздность (если есть), цену в рублях (она есть в тексте) и одну "
+    "деталь (даты, питание / «всё включено», сколько ночей). Конкретно, без "
+    "воды. Без эмодзи-мусора, хэштегов и призывов подписаться. Не выдумывай "
+    "данные. Верни только строку — без «•» и без ссылок."
 )
 
 _VISA_LINE_SYSTEM = (
@@ -92,10 +90,12 @@ _VISA_LINE_SYSTEM = (
 )
 
 
-def _deal_line(deepseek: ChatClient, post: Headline | None, label: str) -> str | None:
+def _deal_line(
+    deepseek: ChatClient, post: Headline | None, label: str, system: str
+) -> str | None:
     if post is None:
         return None
-    text = deepseek.complete(_TOUR_LINE_SYSTEM, post.title, temperature=0.3, max_tokens=160)
+    text = deepseek.complete(system, post.title, temperature=0.3, max_tokens=200)
     text = text.strip().lstrip("•").strip()
     if not text:
         return None
@@ -121,11 +121,11 @@ def build_tourism_section(
             link = f' <a href="{visa.link}">источник</a>' if visa.link else ""
             lines.append(f"• Визы: {text}{link}")
 
-    flight_line = _deal_line(deepseek, flight, "Авиабилет")
+    flight_line = _deal_line(deepseek, flight, "Авиабилет", _FLIGHT_LINE_SYSTEM)
     if flight_line:
         lines.append(flight_line)
 
-    tour_line = _deal_line(deepseek, tour, "Тур")
+    tour_line = _deal_line(deepseek, tour, "Тур", _TOUR_LINE_SYSTEM)
     if tour_line:
         lines.append(tour_line)
 
@@ -135,34 +135,32 @@ def build_tourism_section(
     return Section(title=title, bullets="\n".join(lines))
 
 
+def _intro_outro(hermes: ChatClient, date_str: str) -> tuple[str, str]:
+    """Тёплое приветствие и пожелание дня от Hermes (с надёжным запасным вариантом)."""
+    default = (f"☀️ Доброе утро! Свежий дайджест на {date_str}", "Хорошего дня! 🙌")
+    try:
+        out = hermes.complete(
+            _GREETER_SYSTEM, f"Дата: {date_str}", temperature=0.7, max_tokens=120
+        ).strip()
+        lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        if len(lines) >= 2:
+            return lines[0], lines[-1]
+    except Exception as exc:  # noqa: BLE001 — приветствие необязательно
+        print(f"[digest] приветствие Hermes недоступно ({exc})")
+    return default
+
+
 def compose_digest(hermes: ChatClient, date_str: str, sections: list[Section]) -> str:
-    blocks = "\n\n".join(f"{s.title}\n{s.bullets}" for s in sections)
-    user = (
-        f"Сегодня {date_str}. Составь утренний дайджест из этих тезисов, "
-        f"сохрани порядок и заголовки разделов:\n\n{blocks}"
-    )
-    return hermes.complete(_EDITOR_SYSTEM, user, temperature=0.6, max_tokens=1600).strip()
+    """Детерминированная сборка: каждый раздел гарантированно со своим заголовком.
 
-
-def append_missing(message: str, sections: list[Section]) -> str:
-    """Страховка: дописывает разделы, которые редактор пропустил.
-
-    Присутствие раздела проверяем по его эмодзи (он уникален для темы и
-    устойчив к тому, что модель переформулировала текст заголовка).
+    Структуру НЕ доверяем модели (она склонна склеивать разделы и терять
+    ссылки) — Hermes отвечает только за приветствие и пожелание дня.
     """
-    missing = [s for s in sections if (m := s.title.split()[0]) and m not in message]
-    if not missing:
-        return message
-    extra = "\n\n".join(f"<b>{s.title}</b>\n{s.bullets}" for s in missing)
-    return f"{message}\n\n{extra}"
-
-
-def assemble_plain(date_str: str, sections: list[Section]) -> str:
-    """Резервная сборка дайджеста, если редактор-модель недоступна."""
-    parts = [f"<b>☀️ Доброе утро! Новости на {date_str}</b>", ""]
-    for s in sections:
-        parts.append(f"<b>{s.title}</b>")
-        parts.append(s.bullets)
+    greeting, wish = _intro_outro(hermes, date_str)
+    parts = [f"<b>{greeting}</b>", ""]
+    for section in sections:
+        parts.append(f"<b>{section.title}</b>")
+        parts.append(section.bullets)
         parts.append("")
-    parts.append("Хорошего дня! 🙌")
+    parts.append(wish)
     return "\n".join(parts).strip()

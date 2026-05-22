@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime, timedelta
-from xml.etree import ElementTree as ET
 
 import requests
 
 # Человеческая страница ЦБ — её показываем как ссылку «источник».
 CBR_URL = "https://www.cbr.ru/currency_base/daily/"
-_CBR_XML = "https://www.cbr.ru/scripts/XML_daily.asp"
+# JSON-зеркало ЦБ: в одном ответе и текущее значение, и предыдущее (для дельты).
+_CBR_JSON = "https://www.cbr-xml-daily.ru/daily_json.js"
 
 KAMKOM_URL = "https://bankiros.ru/bank/kamkombank/currency/moskva"
 _KAMKOM_OFFICE = "Чертановская"  # отделение на юге Москвы
@@ -35,44 +34,25 @@ def _fmt(value: float) -> str:
     return f"{value:.2f}".replace(".", ",")
 
 
-def _cbr_usd(date_req: str | None = None) -> float | None:
-    """Курс USD по официальному XML ЦБ. date_req в формате DD/MM/YYYY."""
-    params = {"date_req": date_req} if date_req else None
-    resp = requests.get(_CBR_XML, params=params, timeout=15)
-    resp.raise_for_status()
-    root = ET.fromstring(resp.content)  # bytes: учитывает windows-1251 из заголовка XML
-    for valute in root.findall("Valute"):
-        if valute.findtext("CharCode") != "USD":
-            continue
-        nominal = int(valute.findtext("Nominal") or "1")
-        value = float((valute.findtext("Value") or "0").replace(",", "."))
-        if nominal > 0:
-            return round(value / nominal, 2)
-    return None
-
-
 def _cbr_bullet() -> str | None:
+    """Курс USD ЦБ из JSON-зеркала: текущее значение и изменение за день."""
     try:
-        cur = _cbr_usd()
+        resp = requests.get(_CBR_JSON, timeout=15)
+        resp.raise_for_status()
+        usd = resp.json()["Valute"]["USD"]
+        cur = float(usd["Value"])
+        prev = float(usd["Previous"])
     except Exception as exc:  # noqa: BLE001
         print(f"[rates] курс ЦБ недоступен: {exc}")
         return None
-    if cur is None:
-        return None
 
-    move = ""
-    try:  # дельта за день — необязательна, считаем по вчерашней дате
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y")
-        prev = _cbr_usd(yesterday)
-    except Exception:  # noqa: BLE001
-        prev = None
-    if prev:
-        delta = cur - prev
-        if delta > 0.005:
-            move = f", растёт +{_fmt(delta)} ₽ за день"
-        elif delta < -0.005:
-            move = f", снижается −{_fmt(abs(delta))} ₽ за день"
-
+    delta = cur - prev
+    if delta > 0.005:
+        move = f", растёт +{_fmt(delta)} ₽ за день"
+    elif delta < -0.005:
+        move = f", снижается −{_fmt(abs(delta))} ₽ за день"
+    else:
+        move = ""
     return f'• Курс ЦБ: {_fmt(cur)} ₽ за доллар{move}. <a href="{CBR_URL}">источник</a>'
 
 

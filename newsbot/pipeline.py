@@ -49,6 +49,35 @@ def _first(headlines: list[sources.Headline]) -> sources.Headline | None:
     return headlines[0] if headlines else None
 
 
+# Приоритет направлений для авиабилетов: Бангкок → Пхукет → Вьетнам → остальное.
+_FLIGHT_PRIORITY: tuple[tuple[str, ...], ...] = (
+    ("бангкок", "bangkok", "bkk"),
+    ("пхукет", "phuket", "hkt"),
+    ("вьетнам", "vietnam", "ханой", "нячанг", "дананг", "фукуок", "хошимин"),
+)
+
+
+def _pick_flight(posts: list[sources.Headline]) -> sources.Headline | None:
+    """Выбирает билет по приоритету направлений (Бангкок — в первую очередь)."""
+    for group in _FLIGHT_PRIORITY:
+        for post in posts:  # posts идут от свежих к старым
+            if any(kw in post.title.lower() for kw in group):
+                return post
+    return _first(posts)  # нет приоритетных — берём самый свежий
+
+
+def _pick_tour(posts: list[sources.Headline]) -> sources.Headline | None:
+    """Выбирает тур с ОБЯЗАТЕЛЬНОЙ ценой: приоритет горящим и самым дешёвым."""
+    priced = [(p, sources.min_price_rub(p.title)) for p in posts]
+    priced = [(p, v) for p, v in priced if v is not None]
+    if not priced:
+        return None  # без цены тур не показываем
+    hot = [(p, v) for p, v in priced if "горящ" in p.title.lower()]
+    pool = hot or priced
+    pool.sort(key=lambda pv: pv[1])  # самый дешёвый первым
+    return pool[0][0]
+
+
 def _tourism_section(
     deepseek: ChatClient, topic: Topic, allowed: set[str]
 ) -> digest.Section | None:
@@ -57,8 +86,8 @@ def _tourism_section(
         sources.fetch_headlines(topic.feeds), topic.keywords
     )
     visa = _first(visa_news)
-    flight = _first(sources.fetch_telegram_channel(TOURISM_FLIGHT_CHANNEL, limit=3))
-    tour = _first(sources.fetch_telegram_channel(TOURISM_TOUR_CHANNEL, limit=3))
+    flight = _pick_flight(sources.fetch_telegram_channel(TOURISM_FLIGHT_CHANNEL, limit=25))
+    tour = _pick_tour(sources.fetch_telegram_channel(TOURISM_TOUR_CHANNEL, limit=25))
     for h in (visa, flight, tour):
         if h and h.link:
             allowed.add(h.link)
@@ -94,6 +123,11 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
 
         headlines = sources.fetch_headlines(topic.feeds)
         headlines = sources.filter_by_keywords(headlines, topic.keywords)
+        if topic.key == "gadgets":
+            # Поднимаем наверх новости с ценой, чтобы хотя бы одна попала в выжимку.
+            headlines.sort(
+                key=lambda h: not sources.has_price(f"{h.title} {h.summary}")
+            )
         allowed.update(h.link for h in headlines if h.link)
         print(f"[pipeline] тема «{topic.title}»: {len(headlines)} заголовков")
         section = digest.summarize_topic(deepseek, topic, headlines)
@@ -121,11 +155,5 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
         print("[pipeline] не удалось собрать ни одной новости")
         return None
 
-    try:
-        message = digest.compose_digest(hermes, date_str, sections)
-    except Exception as exc:  # noqa: BLE001 — лучше отправить черновик, чем ничего
-        print(f"[pipeline] редактор Hermes недоступен ({exc}), резервная сборка")
-        message = digest.assemble_plain(date_str, sections)
-
-    message = digest.append_missing(message, sections)
+    message = digest.compose_digest(hermes, date_str, sections)
     return digest.sanitize_links(message, allowed)

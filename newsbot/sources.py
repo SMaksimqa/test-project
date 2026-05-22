@@ -100,6 +100,29 @@ def filter_by_keywords(
     return out
 
 
+_PRICE_RE = re.compile(
+    r"(\d[\d\s., ]{0,12}\d|\d)\s*(?:₽|руб|р\.|rub)", re.IGNORECASE
+)
+
+
+def has_price(text: str) -> bool:
+    """Есть ли в тексте цена в рублях (₽/руб/р.)."""
+    return _PRICE_RE.search(text or "") is not None
+
+
+def min_price_rub(text: str) -> int | None:
+    """Минимальная рублёвая цена из текста (для выбора самого дешёвого тура)."""
+    values: list[int] = []
+    for match in _PRICE_RE.finditer(text or ""):
+        digits = re.sub(r"\D", "", match.group(1))
+        if not digits:
+            continue
+        value = int(digits)
+        if 1000 <= value <= 5_000_000:  # отсекаем мусор: годы, мелкие числа
+            values.append(value)
+    return min(values) if values else None
+
+
 def format_for_prompt(headlines: list[Headline]) -> str:
     lines = []
     for i, h in enumerate(headlines, 1):
