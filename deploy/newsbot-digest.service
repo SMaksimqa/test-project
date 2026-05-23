@@ -1,0 +1,11 @@
+[Unit]
+Description=Morning News — отправка утреннего дайджеста
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=newsbot
+WorkingDirectory=/opt/newsbot
+EnvironmentFile=/opt/newsbot/.env
+ExecStart=/opt/newsbot/.venv/bin/python -m newsbot

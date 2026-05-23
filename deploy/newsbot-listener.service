@@ -1,0 +1,16 @@
+[Unit]
+Description=Morning News — Telegram-слушатель (отвечает на слово «новости»)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=newsbot
+WorkingDirectory=/opt/newsbot
+EnvironmentFile=/opt/newsbot/.env
+ExecStart=/opt/newsbot/.venv/bin/python -m newsbot.listen
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

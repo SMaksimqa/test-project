@@ -1,0 +1,10 @@
+[Unit]
+Description=Запуск утреннего дайджеста в 09:05 МСК
+
+[Timer]
+# 06:05 UTC = 09:05 МСК. Время в UTC, чтобы не зависеть от таймзоны сервера.
+OnCalendar=*-*-* 06:05:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
