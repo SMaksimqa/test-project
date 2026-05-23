@@ -16,11 +16,9 @@ _SUMMARIZER_SYSTEM = (
     "пунктов, но если в указании задано другое количество — точно следуй ему. "
     "Каждый пункт на русском языке — одно ёмкое предложение, начинается с «•». "
     "Не добавляй вступлений и заголовков.\n"
-    "Если у заголовка указана строка «Ссылка: URL», в конце соответствующего "
-    "пункта добавь ссылку на источник в виде HTML-тега Telegram: "
-    '<a href="URL">источник</a>, скопировав URL дословно из этой строки. '
-    "Не придумывай и не изменяй ссылки; если ссылки у заголовка нет — не "
-    "добавляй её."
+    "В САМОМ КОНЦЕ каждого пункта поставь номер источника в квадратных скобках "
+    "— например [3], — взяв номер соответствующего заголовка из списка. "
+    "Никаких ссылок и URL не пиши, только номер в скобках."
 )
 
 _GREETER_SYSTEM = (
@@ -39,6 +37,25 @@ class Section:
     bullets: str  # готовые пункты от DeepSeek
 
 
+_SRC_MARKER_RE = re.compile(r"\s*\[(\d{1,2})\]")
+
+
+def _attach_sources(text: str, headlines: list[Headline]) -> str:
+    """Заменяет маркеры [N] на ссылку соответствующего источника.
+
+    Модель выдаёт короткий номер вместо длинного URL — так ответ не обрывается
+    на середине ссылки и тег всегда остаётся целым.
+    """
+
+    def repl(m: re.Match[str]) -> str:
+        idx = int(m.group(1)) - 1
+        if 0 <= idx < len(headlines) and headlines[idx].link:
+            return f' <a href="{headlines[idx].link}">источник</a>'
+        return ""
+
+    return _SRC_MARKER_RE.sub(repl, text)
+
+
 def summarize_topic(
     deepseek: ChatClient, topic: Topic, headlines: list[Headline]
 ) -> Section | None:
@@ -50,7 +67,7 @@ def summarize_topic(
         user += f"Указание: {topic.focus}\n"
     user += "\nЗаголовки:\n" + format_for_prompt(headlines)
     bullets = deepseek.complete(_SUMMARIZER_SYSTEM, user, temperature=0.3, max_tokens=500)
-    return Section(title=topic.title, bullets=bullets.strip())
+    return Section(title=topic.title, bullets=_attach_sources(bullets.strip(), headlines))
 
 
 def sanitize_links(text: str, allowed: set[str]) -> str:

@@ -173,8 +173,6 @@ def format_for_prompt(headlines: list[Headline]) -> str:
         line = f"{i}. {h.title}"
         if h.summary:
             line += f" — {h.summary}"
-        if h.link:
-            line += f"\n   Ссылка: {h.link}"
         lines.append(line)
     return "\n".join(lines)
 
