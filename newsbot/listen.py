@@ -38,6 +38,16 @@ def _is_trigger(text: str) -> bool:
     return bool(text) and _TRIGGER.search(text) is not None
 
 
+def _allowed(cfg: Config, chat_id: str) -> bool:
+    """Пустой белый список → отвечаем всем; иначе только перечисленным чатам."""
+    if not cfg.allowed_chat_ids:
+        return True
+    if chat_id in cfg.allowed_chat_ids:
+        return True
+    print(f"[listen] игнор: чат {chat_id} не в белом списке")
+    return False
+
+
 def _respond(cfg: Config, deepseek: ChatClient, hermes: ChatClient, chat_id: str) -> None:
     print(f"[listen] триггер из чата {chat_id}")
     telegram.send_message(cfg.telegram_token, chat_id, _BUSY)
@@ -71,8 +81,11 @@ def run() -> None:
             msg = upd.get("message")
             if not msg or not _is_trigger(msg.get("text", "")):
                 continue
+            chat_id = str(msg["chat"]["id"])
+            if not _allowed(cfg, chat_id):
+                continue
             try:
-                _respond(cfg, deepseek, hermes, str(msg["chat"]["id"]))
+                _respond(cfg, deepseek, hermes, chat_id)
             except Exception as exc:  # noqa: BLE001 — один сбой не должен ронять слушатель
                 print(f"[listen] ошибка ответа: {exc}")
 
@@ -99,7 +112,10 @@ def poll_once() -> None:
             continue
         if now - msg.get("date", 0) > _MAX_AGE_SEC:
             continue  # слишком старое — не отвечаем (но ниже подтвердим offset)
-        latest[str(msg["chat"]["id"])] = msg
+        chat_id = str(msg["chat"]["id"])
+        if not _allowed(cfg, chat_id):
+            continue
+        latest[chat_id] = msg
 
     if latest:
         deepseek, hermes = pipeline.make_clients(cfg)

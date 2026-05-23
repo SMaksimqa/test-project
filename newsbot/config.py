@@ -162,6 +162,8 @@ class Config:
     hermes_model: str
     hermes_base_url: str
     dry_run: bool
+    # Кому слушатель отвечает на «новости». Пусто → отвечает всем.
+    allowed_chat_ids: frozenset[str]
 
 
 def _required(name: str) -> str:
@@ -177,6 +179,11 @@ def _optional(name: str, default: str) -> str:
     return value or default
 
 
+def _id_set(name: str) -> frozenset[str]:
+    raw = os.environ.get(name, "").replace(",", " ").split()
+    return frozenset(token.strip() for token in raw if token.strip())
+
+
 def load_config() -> Config:
     return Config(
         telegram_token=_required("TELEGRAM_BOT_TOKEN"),
@@ -188,4 +195,5 @@ def load_config() -> Config:
         hermes_model=_optional("HERMES_MODEL", "nousresearch/hermes-3-llama-3.1-70b"),
         hermes_base_url=_optional("HERMES_BASE_URL", "https://openrouter.ai/api/v1"),
         dry_run=os.environ.get("DRY_RUN", "").strip().lower() in {"1", "true", "yes"},
+        allowed_chat_ids=_id_set("ALLOWED_CHAT_IDS"),
     )
