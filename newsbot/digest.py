@@ -21,13 +21,6 @@ _SUMMARIZER_SYSTEM = (
     "Никаких ссылок и URL не пиши, только номер в скобках."
 )
 
-_GREETER_SYSTEM = (
-    "Ты — ведущий тёплой утренней рассылки. Верни РОВНО две строки на русском "
-    "без Markdown и без кавычек: первая — короткое приветствие с датой; вторая "
-    "— короткое доброе пожелание дня. Допускается по одному эмодзи в строке. "
-    "Никаких других строк и пояснений."
-)
-
 _LINK_RE = re.compile(r"""<a\s+href=(["'])(.*?)\1[^>]*>(.*?)</a>""", re.DOTALL | re.IGNORECASE)
 
 
@@ -184,28 +177,12 @@ def build_tourism_section(
     return Section(title=title, bullets="\n".join(lines))
 
 
-def _intro_outro(hermes: ChatClient, date_str: str) -> tuple[str, str]:
-    """Тёплое приветствие и пожелание дня от Hermes (с надёжным запасным вариантом)."""
-    default = (f"☀️ Доброе утро! Свежий дайджест на {date_str}", "Хорошего дня! 🙌")
-    try:
-        out = hermes.complete(
-            _GREETER_SYSTEM, f"Дата: {date_str}", temperature=0.7, max_tokens=120
-        ).strip()
-        lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
-        if len(lines) >= 2:
-            return lines[0], lines[-1]
-    except Exception as exc:  # noqa: BLE001 — приветствие необязательно
-        print(f"[digest] приветствие Hermes недоступно ({exc})")
-    return default
-
-
-def compose_digest(hermes: ChatClient, date_str: str, sections: list[Section]) -> str:
+def compose_digest(greeting: str, wish: str, sections: list[Section]) -> str:
     """Детерминированная сборка: каждый раздел гарантированно со своим заголовком.
 
-    Структуру НЕ доверяем модели (она склонна склеивать разделы и терять
-    ссылки) — Hermes отвечает только за приветствие и пожелание дня.
+    Приветствие и пожелание формируются по времени МСК (см. pipeline), структуру
+    не доверяем модели — она склонна склеивать разделы и терять ссылки.
     """
-    greeting, wish = _intro_outro(hermes, date_str)
     parts = [f"<b>{greeting}</b>", ""]
     for section in sections:
         parts.append(f"<b>{section.title}</b>")

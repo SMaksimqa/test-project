@@ -28,6 +28,21 @@ def _date_str(now: datetime) -> str:
     return f"{now.day} {_MONTHS[now.month - 1]} {now.year} г."
 
 
+def _greeting_and_wish(now: datetime) -> tuple[str, str]:
+    """Приветствие и пожелание по времени суток в Москве + текущее время."""
+    hour = now.hour
+    if 5 <= hour < 12:
+        word, wish = "Доброе утро", "Хорошего дня! ☀️"
+    elif 12 <= hour < 18:
+        word, wish = "Добрый день", "Хорошего дня! ☀️"
+    elif 18 <= hour < 23:
+        word, wish = "Добрый вечер", "Доброго вечера! 🌆"
+    else:
+        word, wish = "Доброй ночи", "Спокойной ночи! 🌙"
+    greeting = f"{word}! Москва, {now:%H:%M} · {_date_str(now)}"
+    return greeting, wish
+
+
 def make_clients(cfg: Config) -> tuple[ChatClient, ChatClient]:
     deepseek = ChatClient(
         api_key=cfg.deepseek_api_key,
@@ -149,8 +164,9 @@ def _tourism_section(
 
 def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
     """Собирает дайджест по всем темам. Возвращает готовый текст или None."""
-    date_str = _date_str(datetime.now(MSK))
-    print(f"[pipeline] сборка дайджеста, дата (МСК): {date_str}")
+    now = datetime.now(MSK)
+    greeting, wish = _greeting_and_wish(now)
+    print(f"[pipeline] сборка дайджеста, {greeting}")
 
     sections: list[digest.Section] = []
     allowed: set[str] = set()  # ссылки, которым доверяем (реальные источники)
@@ -196,6 +212,6 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
         print("[pipeline] не удалось собрать ни одной новости")
         return None
 
-    message = digest.compose_digest(hermes, date_str, sections)
+    message = digest.compose_digest(greeting, wish, sections)
     message = digest.sanitize_links(message, allowed)
     return digest.harden_html(message)

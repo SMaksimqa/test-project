@@ -6,6 +6,8 @@ import base64
 import html
 import re
 from dataclasses import dataclass
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from xml.etree import ElementTree as ET
 
@@ -21,6 +23,7 @@ class Headline:
     title: str
     summary: str
     link: str
+    published: float | None = None  # epoch-время публикации для сортировки по свежести
 
 
 def _clean(text: str, limit: int = 280) -> str:
@@ -92,6 +95,20 @@ def _link(item: ET.Element) -> str:
     return _direct_link((el.text or el.get("href") or "").strip())
 
 
+def _published(item: ET.Element) -> float | None:
+    el = _find(item, "pubdate", "published", "updated", "date")
+    if el is None or not el.text:
+        return None
+    raw = el.text.strip()
+    try:
+        return parsedate_to_datetime(raw).timestamp()  # RSS (RFC 822)
+    except (TypeError, ValueError):
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()  # Atom (ISO)
+        except ValueError:
+            return None
+
+
 def _parse(content: bytes) -> list[Headline]:
     root = ET.fromstring(content)
     items: list[Headline] = []
@@ -104,7 +121,9 @@ def _parse(content: bytes) -> list[Headline]:
             continue
         summary_el = _find(el, "description", "summary", "content")
         summary = _clean(summary_el.text if summary_el is not None else "")
-        items.append(Headline(title=title, summary=summary, link=_link(el)))
+        items.append(
+            Headline(title=title, summary=summary, link=_link(el), published=_published(el))
+        )
     return items
 
 
@@ -126,6 +145,8 @@ def fetch_headlines(feeds: tuple[str, ...], per_feed: int = 8) -> list[Headline]
                 continue
             seen.add(key)
             result.append(h)
+    # Свежие — вперёд: так дайджест каждый день берёт новые новости, а не одни и те же.
+    result.sort(key=lambda h: h.published or 0.0, reverse=True)
     return result
 
 
