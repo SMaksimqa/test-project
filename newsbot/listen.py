@@ -29,6 +29,7 @@ from .llm import ChatClient
 _TRIGGER = re.compile(r"(?<!\w)новости(?!\w)", re.IGNORECASE)
 _BUSY = "Собираю свежую сводку, это займёт около минуты…"
 _EMPTY = "Сейчас не удалось собрать новости, попробуйте чуть позже."
+_WELCOME = "Привет! 👋 Напиши «новости» — и я пришлю свежий дайджест."
 # В режиме опроса игнорируем триггеры старше этого возраста (защита от старого
 # хвоста сообщений при первом запуске). Чуть больше интервала опроса.
 _MAX_AGE_SEC = 1800
@@ -36,6 +37,13 @@ _MAX_AGE_SEC = 1800
 
 def _is_trigger(text: str) -> bool:
     return bool(text) and _TRIGGER.search(text) is not None
+
+
+def _is_start(text: str) -> bool:
+    if not text:
+        return False
+    first = text.strip().split(maxsplit=1)[0]
+    return first.split("@")[0] == "/start"
 
 
 def _is_allowed(cfg: Config, chat_id: str) -> bool:
@@ -89,11 +97,19 @@ def run() -> None:
         for upd in updates:
             offset = upd["update_id"] + 1
             msg = upd.get("message")
-            if not msg or not _is_trigger(msg.get("text", "")):
+            if not msg:
+                continue
+            text = msg.get("text", "")
+            is_start = _is_start(text)
+            if not is_start and not _is_trigger(text):
                 continue
             chat_id = str(msg["chat"]["id"])
             if not _is_allowed(cfg, chat_id):
                 _deny(cfg, msg)
+                continue
+            if is_start:
+                print(f"[listen] /start от {chat_id}")
+                telegram.send_message(cfg.telegram_token, chat_id, _WELCOME)
                 continue
             try:
                 _respond(cfg, deepseek, hermes, chat_id)
