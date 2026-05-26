@@ -38,14 +38,24 @@ def _is_trigger(text: str) -> bool:
     return bool(text) and _TRIGGER.search(text) is not None
 
 
-def _allowed(cfg: Config, chat_id: str) -> bool:
+def _is_allowed(cfg: Config, chat_id: str) -> bool:
     """Пустой белый список → отвечаем всем; иначе только перечисленным чатам."""
-    if not cfg.allowed_chat_ids:
-        return True
-    if chat_id in cfg.allowed_chat_ids:
-        return True
-    print(f"[listen] игнор: чат {chat_id} не в белом списке")
-    return False
+    return not cfg.allowed_chat_ids or chat_id in cfg.allowed_chat_ids
+
+
+def _deny(cfg: Config, msg: dict) -> None:
+    """Отказ в доступе: в личке шлём ID юзера для админа, в группах — молча."""
+    chat = msg["chat"]
+    chat_id = str(chat["id"])
+    user_id = msg.get("from", {}).get("id", chat["id"])
+    print(f"[listen] доступ закрыт: чат {chat_id}, юзер {user_id}")
+    if chat.get("type") == "private":
+        text = (
+            "Извини, бот приватный 🔒\n\n"
+            f"Твой Telegram ID: {user_id}\n"
+            "Передай его администратору, чтобы получить доступ."
+        )
+        telegram.send_message(cfg.telegram_token, chat_id, text)
 
 
 def _respond(cfg: Config, deepseek: ChatClient, hermes: ChatClient, chat_id: str) -> None:
@@ -82,7 +92,8 @@ def run() -> None:
             if not msg or not _is_trigger(msg.get("text", "")):
                 continue
             chat_id = str(msg["chat"]["id"])
-            if not _allowed(cfg, chat_id):
+            if not _is_allowed(cfg, chat_id):
+                _deny(cfg, msg)
                 continue
             try:
                 _respond(cfg, deepseek, hermes, chat_id)
@@ -113,7 +124,8 @@ def poll_once() -> None:
         if now - msg.get("date", 0) > _MAX_AGE_SEC:
             continue  # слишком старое — не отвечаем (но ниже подтвердим offset)
         chat_id = str(msg["chat"]["id"])
-        if not _allowed(cfg, chat_id):
+        if not _is_allowed(cfg, chat_id):
+            _deny(cfg, msg)
             continue
         latest[chat_id] = msg
 
