@@ -102,8 +102,12 @@ TOPICS: tuple[Topic, ...] = (
         feeds=(
             "https://habr.com/ru/rss/articles/?fl=ru",
             "https://3dnews.ru/news/rss/",
+            "https://www.businesstoday.in/rss/technology",
         ),
-        focus="Дай ровно 4 новости — самые значимые и интересные.",
+        focus=(
+            "Дай ровно 4 новости — самые значимые и интересные. Если заголовок "
+            "на английском, переведи суть пункта на русский (читатели русскоязычные)."
+        ),
     ),
     Topic(
         key="gadgets",
