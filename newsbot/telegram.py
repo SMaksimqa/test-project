@@ -32,15 +32,24 @@ def _split(text: str, limit: int = _LIMIT) -> list[str]:
     return chunks
 
 
-def send_message(token: str, chat_id: str, text: str, timeout: int = 30) -> None:
+def send_message(
+    token: str,
+    chat_id: str,
+    text: str,
+    timeout: int = 30,
+    reply_markup: dict | None = None,
+) -> None:
     url = _API.format(token=token)
-    for chunk in _split(text):
-        payload = {
+    chunks = _split(text)
+    for i, chunk in enumerate(chunks):
+        payload: dict = {
             "chat_id": chat_id,
             "text": chunk,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
+        if reply_markup is not None and i == len(chunks) - 1:
+            payload["reply_markup"] = reply_markup
         resp = requests.post(url, json=payload, timeout=timeout)
         if resp.status_code == 400:
             # Невалидный HTML — отправляем уже без тегов, чистым текстом.

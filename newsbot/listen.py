@@ -25,11 +25,21 @@ from . import pipeline, telegram
 from .config import Config, load_config
 from .llm import ChatClient
 
-# Слово «новости» как отдельное слово; срабатывает и на команду «/новости».
+# Слово «новости» как отдельное слово; срабатывает и на команду «/новости»,
+# и на текст постоянной кнопки «📰 Новости».
 _TRIGGER = re.compile(r"(?<!\w)новости(?!\w)", re.IGNORECASE)
 _BUSY = "Собираю свежую сводку, это займёт около минуты…"
 _EMPTY = "Сейчас не удалось собрать новости, попробуйте чуть позже."
-_WELCOME = "Привет! 👋 Напиши «новости» — и я пришлю свежий дайджест."
+_WELCOME = (
+    "Привет! 👋 Жми кнопку «📰 Новости» внизу — или напиши «новости» / "
+    "выбери /новости в меню."
+)
+# Постоянная reply-клавиатура: одна большая кнопка над клавиатурой ввода.
+_KEYBOARD = {
+    "keyboard": [[{"text": "📰 Новости"}]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
 # В режиме опроса игнорируем триггеры старше этого возраста (защита от старого
 # хвоста сообщений при первом запуске). Чуть больше интервала опроса.
 _MAX_AGE_SEC = 1800
@@ -68,14 +78,30 @@ def _deny(cfg: Config, msg: dict) -> None:
 
 def _respond(cfg: Config, deepseek: ChatClient, hermes: ChatClient, chat_id: str) -> None:
     print(f"[listen] триггер из чата {chat_id}")
-    telegram.send_message(cfg.telegram_token, chat_id, _BUSY)
+    # Клавиатуру цепляем к BUSY-сообщению — кнопка останется висеть в чате.
+    telegram.send_message(cfg.telegram_token, chat_id, _BUSY, reply_markup=_KEYBOARD)
     message = pipeline.generate_digest(deepseek, hermes)
     telegram.send_message(cfg.telegram_token, chat_id, message or _EMPTY)
+
+
+def _register_menu(token: str) -> None:
+    """Один раз при старте: команда /новости в меню бота рядом с полем ввода."""
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/setMyCommands",
+            json={"commands": [{"command": "новости", "description": "Свежий дайджест"}]},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        print("[listen] меню команд зарегистрировано")
+    except requests.RequestException as exc:
+        print(f"[listen] не удалось зарегистрировать меню: {exc}")
 
 
 def run() -> None:
     """Постоянный long-polling. Подходит для всегда-онлайн хостинга (VPS)."""
     cfg = load_config()
+    _register_menu(cfg.telegram_token)
     deepseek, hermes = pipeline.make_clients(cfg)
     api = f"https://api.telegram.org/bot{cfg.telegram_token}"
     offset: int | None = None
@@ -109,7 +135,9 @@ def run() -> None:
                 continue
             if is_start:
                 print(f"[listen] /start от {chat_id}")
-                telegram.send_message(cfg.telegram_token, chat_id, _WELCOME)
+                telegram.send_message(
+                    cfg.telegram_token, chat_id, _WELCOME, reply_markup=_KEYBOARD
+                )
                 continue
             try:
                 _respond(cfg, deepseek, hermes, chat_id)
