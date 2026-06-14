@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from . import digest, rates, sources
+from . import digest, memory, rates, sources
 from .config import (
     TOPICS,
     TOURISM_FLIGHT_CHANNEL,
@@ -125,18 +125,25 @@ def _pick_tours(posts: list[sources.Headline], limit: int = 3) -> list[sources.H
 
 
 def _tourism_section(
-    deepseek: ChatClient, topic: Topic, allowed: set[str]
+    deepseek: ChatClient, topic: Topic, allowed: set[str], seen: set[str]
 ) -> digest.Section | None:
     """Туризм: визы (ленты) + билет и до трёх туров (Telegram-каналы)."""
     visa_news = sources.filter_by_keywords(
         sources.fetch_headlines(topic.feeds), topic.keywords
     )
+    visa_news = [h for h in visa_news if h.link not in seen]
     visa = _first(visa_news)
-    flight = _pick_flight(sources.fetch_telegram_channel(TOURISM_FLIGHT_CHANNEL, limit=25))
+
+    flight_posts = [
+        p for p in sources.fetch_telegram_channel(TOURISM_FLIGHT_CHANNEL, limit=25)
+        if p.link not in seen
+    ]
+    flight = _pick_flight(flight_posts)
 
     tour_posts: list[sources.Headline] = []
     for channel in TOURISM_TOUR_CHANNELS:
         tour_posts += sources.fetch_telegram_channel(channel, limit=20)
+    tour_posts = [p for p in tour_posts if p.link not in seen]
     tours = _pick_tours(tour_posts)
 
     for h in [visa, flight, *tours]:
@@ -162,18 +169,33 @@ def _tourism_section(
     return section
 
 
+# URL, которые всегда должны появляться (курсы, вебкамеры, ссылка на поиск
+# туров) — их НЕ запоминаем в антиповторе, иначе после первого выпуска бот
+# больше никогда их не покажет.
+_NEVER_REMEMBER = {
+    rates.CBR_URL,
+    rates.KAMKOM_URL,
+    TOURISM_WEBCAM_URL,
+    TOURISM_TOUR_SEARCH_URL,
+}
+
+
 def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
     """Собирает дайджест по всем темам. Возвращает готовый текст или None."""
     now = datetime.now(MSK)
     greeting, wish = _greeting_and_wish(now)
     print(f"[pipeline] сборка дайджеста, {greeting}")
 
+    seen = memory.load_seen()
+    if seen:
+        print(f"[pipeline] память: {len(seen)} URL уже показывали, пропустим их")
+
     sections: list[digest.Section] = []
     allowed: set[str] = set()  # ссылки, которым доверяем (реальные источники)
 
     for topic in TOPICS:
         if topic.key == "tourism":
-            section = _tourism_section(deepseek, topic, allowed)
+            section = _tourism_section(deepseek, topic, allowed, seen)
             if section:
                 sections.append(section)
             continue
@@ -195,6 +217,7 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
 
         headlines = sources.fetch_headlines(topic.feeds)
         headlines = sources.filter_by_keywords(headlines, topic.keywords)
+        headlines = [h for h in headlines if h.link not in seen]
         if topic.key == "gadgets":
             # Поднимаем наверх новости с ценой, чтобы хотя бы одна попала в выжимку.
             headlines.sort(
@@ -214,4 +237,8 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
 
     message = digest.compose_digest(greeting, wish, sections)
     message = digest.sanitize_links(message, allowed)
-    return digest.harden_html(message)
+    message = digest.harden_html(message)
+
+    used = memory.extract_used(message) - _NEVER_REMEMBER
+    memory.save_seen(used)
+    return message
