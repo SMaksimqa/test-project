@@ -440,7 +440,9 @@ def fetch_telegram_top(
     """Топ постов канала за последние N часов — по реакциям, потом по просмотрам.
 
     Если канал не отдаёт реакций (отключены), фактически сортируется по
-    просмотрам — это разумный прокси для «залайканных» постов.
+    просмотрам — это разумный прокси для «залайканных» постов. Посты, у
+    которых не удалось разобрать дату, тоже попадают в выборку — иначе при
+    смене HTML t.me раздел молча пропадает.
     """
     url = f"https://t.me/s/{channel}"
     try:
@@ -453,6 +455,13 @@ def fetch_telegram_top(
         print(f"[sources] канал недоступен t.me/s/{channel}: {exc}")
         return []
     cutoff = datetime.now().timestamp() - hours * 3600
-    fresh = [p for p in parser.posts if p.published >= cutoff]
+    no_date = [p for p in parser.posts if p.published == 0.0]
+    fresh = [
+        p for p in parser.posts if p.published == 0.0 or p.published >= cutoff
+    ]
+    print(
+        f"[sources] t.me/s/{channel}: распарсено {len(parser.posts)}, "
+        f"без даты {len(no_date)}, в окне {hours}ч {len(fresh)}"
+    )
     fresh.sort(key=lambda p: (p.reactions, p.views), reverse=True)
     return fresh[:limit]

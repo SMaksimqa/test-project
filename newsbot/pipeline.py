@@ -212,11 +212,20 @@ def _world_section(allowed: set[str], seen: set[str]) -> digest.Section | None:
         posts.append(p)
         if len(posts) >= 5:
             break
+    print(
+        f"[pipeline] тема «🌍 В мире»: годных {len(posts)} из сырых {len(raw)}, "
+        f"отсеяно {skipped}"
+    )
     if not posts:
-        print(
-            f"[pipeline] тема «🌍 В мире»: канал {_WORLD_CHANNEL} не отдал годных постов "
-            f"(сырых {len(raw)}, отсеяно {skipped})"
-        )
+        if raw:
+            # Раз посты есть, но все отсеялись — печатаем причины первых трёх
+            # сырых для диагностики (часто помогает понять, что не так).
+            for p in raw[:3]:
+                print(
+                    f"[pipeline] sample: top_react={p.top_reaction!r} "
+                    f"len={len(p.text)} media={p.has_media} "
+                    f"text={p.text[:80]!r}"
+                )
         return None
     lines: list[str] = []
     for p in posts:
@@ -225,10 +234,6 @@ def _world_section(allowed: set[str], seen: set[str]) -> digest.Section | None:
             excerpt += "…"
         lines.append(f'• {excerpt} <a href="{p.link}">→</a>')
         allowed.add(p.link)
-    print(
-        f"[pipeline] тема «🌍 В мире»: топ {len(posts)} постов, "
-        f"отсеяно {skipped} (рекл./подписи/видели)"
-    )
     return digest.Section(title="🌍 В мире", bullets="\n".join(lines))
 
 
