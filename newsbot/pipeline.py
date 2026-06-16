@@ -169,6 +169,50 @@ def _tourism_section(
     return section
 
 
+# Канал, из которого берём «В мире» — последние самые залайканные посты за день.
+_WORLD_CHANNEL = "pezduzalive"
+
+
+def _world_section(allowed: set[str], seen: set[str]) -> digest.Section | None:
+    """«В мире» = топ-5 постов pezduzalive за последние сутки по реакциям."""
+    posts = sources.fetch_telegram_top(_WORLD_CHANNEL, hours=24, limit=5)
+    posts = [p for p in posts if p.link not in seen]
+    if not posts:
+        print(f"[pipeline] тема «🌍 В мире»: канал {_WORLD_CHANNEL} не отдал постов")
+        return None
+    lines: list[str] = []
+    for p in posts:
+        excerpt = p.text[:200].rstrip()
+        if len(p.text) > 200:
+            excerpt += "…"
+        lines.append(f'• {excerpt} <a href="{p.link}">→</a>')
+        allowed.add(p.link)
+    print(
+        f"[pipeline] тема «🌍 В мире»: топ {len(posts)} постов "
+        f"(реакции/просмотры: {[(p.reactions, p.views) for p in posts]})"
+    )
+    return digest.Section(title="🌍 В мире", bullets="\n".join(lines))
+
+
+def _worldcup_section(
+    deepseek: ChatClient,
+    topic: Topic,
+    allowed: set[str],
+    seen: set[str],
+    now_msk: datetime,
+) -> digest.Section | None:
+    """ЧМ-2026: матчи вчера со счётом + сегодня с временем и каналом."""
+    headlines = sources.fetch_headlines(topic.feeds)
+    headlines = sources.filter_by_keywords(headlines, topic.keywords)
+    headlines = [h for h in headlines if h.link not in seen]
+    allowed.update(h.link for h in headlines if h.link)
+    print(f"[pipeline] тема «{topic.title}»: {len(headlines)} материалов (ищем матчи)")
+    yest = now_msk - timedelta(days=1)
+    return digest.summarize_worldcup(
+        deepseek, topic, headlines, _date_str(now_msk), _date_str(yest)
+    )
+
+
 # URL, которые всегда должны появляться (курсы, вебкамеры, ссылка на поиск
 # туров) — их НЕ запоминаем в антиповторе, иначе после первого выпуска бот
 # больше никогда их не покажет.
@@ -194,6 +238,18 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
     allowed: set[str] = set()  # ссылки, которым доверяем (реальные источники)
 
     for topic in TOPICS:
+        if topic.key == "world":
+            section = _world_section(allowed, seen)
+            if section:
+                sections.append(section)
+            continue
+
+        if topic.key == "worldcup":
+            section = _worldcup_section(deepseek, topic, allowed, seen, now)
+            if section:
+                sections.append(section)
+            continue
+
         if topic.key == "tourism":
             section = _tourism_section(deepseek, topic, allowed, seen)
             if section:

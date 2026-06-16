@@ -268,3 +268,153 @@ def fetch_telegram_channel(channel: str, limit: int = 5) -> list[Headline]:
         return []
     posts = parser.posts[-limit:][::-1]  # предпросмотр идёт от старых к новым
     return [Headline(title=text, summary="", link=link) for text, link in posts]
+
+
+@dataclass(frozen=True)
+class ChannelPost:
+    """Пост канала с инфой об охвате — для сортировки «топ за день»."""
+
+    text: str
+    link: str
+    published: float  # epoch UTC, 0 если дату не разобрали
+    reactions: int  # сумма всех реакций
+    views: int  # количество просмотров
+
+
+_NUM_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*([KkMmКкМм])?")
+# Самозакрывающиеся теги (HTMLParser не вызывает для них endtag) — не качаем глубину.
+_VOID_TAGS = {"br", "img", "hr", "input", "meta", "link", "source", "wbr"}
+
+
+def _parse_short_number(text: str) -> int:
+    """Парсит «15.2K», «1,5M», «42» в целое число (Telegram даёт сокращения)."""
+    m = _NUM_RE.search(text or "")
+    if not m:
+        return 0
+    value = float(m.group(1).replace(",", "."))
+    suffix = (m.group(2) or "").lower()
+    if suffix in ("k", "к"):
+        value *= 1_000
+    elif suffix in ("m", "м"):
+        value *= 1_000_000
+    return int(value)
+
+
+class _TgEngagementParser(HTMLParser):
+    """Парсит t.me/s/<канал>: текст, ссылку, время, реакции и просмотры поста."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.posts: list[ChannelPost] = []
+        self._reset_current()
+
+    def _reset_current(self) -> None:
+        self._post_id = ""
+        self._text_parts: list[str] = []
+        self._views_text = ""
+        self._datetime = ""
+        self._reactions = 0
+        self._in_text = 0
+        self._in_views = 0
+        self._in_reaction_value = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        d = {k: (v or "") for k, v in attrs}
+        cls = d.get("class", "")
+        if d.get("data-post"):
+            self._flush()
+            self._post_id = d["data-post"]
+            return
+        if not self._post_id:
+            return
+        void = tag in _VOID_TAGS
+        if "tgme_widget_message_text" in cls:
+            self._in_text = 1
+            return
+        if self._in_text:
+            if tag == "br":
+                self._text_parts.append(" ")
+            if not void:
+                self._in_text += 1
+        if "tgme_widget_message_views" in cls:
+            self._in_views = 1
+        elif self._in_views and not void:
+            self._in_views += 1
+        if "tgme_reaction_value" in cls:
+            self._in_reaction_value = 1
+        elif self._in_reaction_value and not void:
+            self._in_reaction_value += 1
+        if tag == "time" and d.get("datetime") and not self._datetime:
+            self._datetime = d["datetime"]
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._post_id:
+            return
+        if self._in_text:
+            self._in_text -= 1
+        if self._in_views:
+            self._in_views -= 1
+        if self._in_reaction_value:
+            self._in_reaction_value -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._post_id:
+            return
+        if self._in_text:
+            self._text_parts.append(data)
+        if self._in_views:
+            self._views_text += data
+        if self._in_reaction_value:
+            self._reactions += _parse_short_number(data)
+
+    def _flush(self) -> None:
+        if not self._post_id:
+            return
+        text = _clean("".join(self._text_parts), limit=400)
+        ts = 0.0
+        if self._datetime:
+            try:
+                ts = datetime.fromisoformat(
+                    self._datetime.replace("Z", "+00:00")
+                ).timestamp()
+            except ValueError:
+                ts = 0.0
+        if text:
+            self.posts.append(
+                ChannelPost(
+                    text=text,
+                    link=f"https://t.me/{self._post_id}",
+                    published=ts,
+                    reactions=self._reactions,
+                    views=_parse_short_number(self._views_text),
+                )
+            )
+        self._reset_current()
+
+    def close(self) -> None:  # noqa: D401
+        super().close()
+        self._flush()
+
+
+def fetch_telegram_top(
+    channel: str, hours: int = 24, limit: int = 5
+) -> list[ChannelPost]:
+    """Топ постов канала за последние N часов — по реакциям, потом по просмотрам.
+
+    Если канал не отдаёт реакций (отключены), фактически сортируется по
+    просмотрам — это разумный прокси для «залайканных» постов.
+    """
+    url = f"https://t.me/s/{channel}"
+    try:
+        resp = requests.get(url, headers={"User-Agent": _UA}, timeout=20)
+        resp.raise_for_status()
+        parser = _TgEngagementParser()
+        parser.feed(resp.text)
+        parser.close()
+    except Exception as exc:  # noqa: BLE001 — недоступный канал не должен ронять бот
+        print(f"[sources] канал недоступен t.me/s/{channel}: {exc}")
+        return []
+    cutoff = datetime.now().timestamp() - hours * 3600
+    fresh = [p for p in parser.posts if p.published >= cutoff]
+    fresh.sort(key=lambda p: (p.reactions, p.views), reverse=True)
+    return fresh[:limit]
