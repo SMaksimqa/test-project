@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
-from . import digest, memory, rates, sources
+from . import digest, memory, rates, sources, tourism_tips
 from .config import (
     TOPICS,
     TOURISM_FLIGHT_CHANNEL,
@@ -126,15 +126,10 @@ def _pick_tours(posts: list[sources.Headline], limit: int = 3) -> list[sources.H
 
 
 def _tourism_section(
-    deepseek: ChatClient, topic: Topic, allowed: set[str], seen: set[str]
+    deepseek: ChatClient, topic: Topic, allowed: set[str], seen: set[str],
+    now_msk: datetime,
 ) -> digest.Section | None:
-    """Туризм: визы (ленты) + билет и до трёх туров (Telegram-каналы)."""
-    visa_news = sources.filter_by_keywords(
-        sources.fetch_headlines(topic.feeds), topic.keywords
-    )
-    visa_news = [h for h in visa_news if h.link not in seen]
-    visa = _first(visa_news)
-
+    """Туризм: лайфхак дня + авиабилет и до трёх туров (Telegram-каналы)."""
     flight_posts = [
         p for p in sources.fetch_telegram_channel(TOURISM_FLIGHT_CHANNEL, limit=25)
         if p.link not in seen
@@ -147,14 +142,17 @@ def _tourism_section(
     tour_posts = [p for p in tour_posts if p.link not in seen]
     tours = _pick_tours(tour_posts)
 
-    for h in [visa, flight, *tours]:
+    for h in [flight, *tours]:
         if h and h.link:
             allowed.add(h.link)
     print(
-        f"[pipeline] тема «{topic.title}»: визы={bool(visa)} "
-        f"билет={bool(flight)} туров={len(tours)}"
+        f"[pipeline] тема «{topic.title}»: билет={bool(flight)} туров={len(tours)}"
     )
-    section = digest.build_tourism_section(deepseek, topic.title, visa, flight, tours)
+    section = digest.build_tourism_section(deepseek, topic.title, None, flight, tours)
+
+    # Лайфхак — первая строка раздела, всегда есть.
+    tip = tourism_tips.tip_of_day(now_msk)
+    head = f"• Лайфхак дня: {tip}"
 
     extra = []
     if not tours:  # туров с ценой не нашли — даём ссылку на поиск
@@ -165,8 +163,8 @@ def _tourism_section(
 
     extra_text = "\n".join(extra)
     if section is None:
-        return digest.Section(title=topic.title, bullets=extra_text)
-    section.bullets = f"{section.bullets}\n{extra_text}"
+        return digest.Section(title=topic.title, bullets=f"{head}\n{extra_text}")
+    section.bullets = f"{head}\n{section.bullets}\n{extra_text}"
     return section
 
 
@@ -293,7 +291,7 @@ def generate_digest(deepseek: ChatClient, hermes: ChatClient) -> str | None:
             continue
 
         if topic.key == "tourism":
-            section = _tourism_section(deepseek, topic, allowed, seen)
+            section = _tourism_section(deepseek, topic, allowed, seen, now)
             if section:
                 sections.append(section)
             continue
