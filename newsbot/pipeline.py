@@ -178,8 +178,10 @@ _WORLD_CHANNEL = "pezduzalive"
 _AD_TEXT_RE = re.compile(r"реклам|\berid\b|промокод|купон", re.IGNORECASE)
 # Эмодзи-«клоун» — публика канала ставит её как пометку «это реклама».
 _AD_REACTION = "🤡"
-# Без картинки/видео пост короче этого порога обычно теряет смысл.
-_MEDIA_MIN_TEXT = 100
+# В этом канале на каждом посте картинка, поэтому медиа-признак сам по себе
+# не годится. Отсекаем только посты, где текста объективно мало для шутки —
+# короткие «вот это да» / «хах» без контекста.
+_CAPTION_MAX_LEN = 30
 
 
 def _is_pezduza_ad(post: sources.ChannelPost) -> bool:
@@ -188,17 +190,17 @@ def _is_pezduza_ad(post: sources.ChannelPost) -> bool:
     return bool(_AD_TEXT_RE.search(post.text))
 
 
-def _is_media_dependent(post: sources.ChannelPost) -> bool:
-    """Текст слишком короткий и опирается на прикреплённое медиа — в дайджесте бесполезен."""
-    return post.has_media and len(post.text) < _MEDIA_MIN_TEXT
+def _is_caption_only(post: sources.ChannelPost) -> bool:
+    """Очень короткий текст обычно — подпись к мему, в digest без картинки бесполезен."""
+    return len(post.text) < _CAPTION_MAX_LEN
 
 
 def _world_section(allowed: set[str], seen: set[str]) -> digest.Section | None:
-    """«В мире» = топ-5 постов pezduzalive за сутки по реакциям, без рекламы и «голых» подписей."""
+    """«В мире» = топ-5 постов pezduzalive за сутки по реакциям, без рекламы и подписей-затычек."""
     # Берём с запасом — после фильтрации должно остаться минимум 5 хороших постов.
     raw = sources.fetch_telegram_top(_WORLD_CHANNEL, hours=24, limit=30)
     posts: list[sources.ChannelPost] = []
-    skipped = {"ad": 0, "media_only": 0, "seen": 0}
+    skipped = {"ad": 0, "caption": 0, "seen": 0}
     for p in raw:
         if p.link in seen:
             skipped["seen"] += 1
@@ -206,8 +208,8 @@ def _world_section(allowed: set[str], seen: set[str]) -> digest.Section | None:
         if _is_pezduza_ad(p):
             skipped["ad"] += 1
             continue
-        if _is_media_dependent(p):
-            skipped["media_only"] += 1
+        if _is_caption_only(p):
+            skipped["caption"] += 1
             continue
         posts.append(p)
         if len(posts) >= 5:
@@ -227,7 +229,7 @@ def _world_section(allowed: set[str], seen: set[str]) -> digest.Section | None:
         allowed.add(p.link)
     print(
         f"[pipeline] тема «🌍 В мире»: топ {len(posts)} постов, "
-        f"отсеяно {skipped} (рекл./медиа-зависимые/видели)"
+        f"отсеяно {skipped} (рекл./подписи/видели)"
     )
     return digest.Section(title="🌍 В мире", bullets="\n".join(lines))
 
