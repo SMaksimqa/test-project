@@ -279,6 +279,8 @@ class ChannelPost:
     published: float  # epoch UTC, 0 если дату не разобрали
     reactions: int  # сумма всех реакций
     views: int  # количество просмотров
+    has_media: bool = False  # есть ли фото/видео/стикер — текст без этого может быть бессмысленным
+    top_reaction: str = ""  # эмодзи самой массовой реакции; «🤡» — пометка «реклама» от подписчиков
 
 
 _NUM_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*([KkMmКкМм])?")
@@ -300,8 +302,20 @@ def _parse_short_number(text: str) -> int:
     return int(value)
 
 
+_MEDIA_MARKERS = (
+    "tgme_widget_message_photo_wrap",
+    "tgme_widget_message_video_player",
+    "tgme_widget_message_video_wrap",
+    "tgme_widget_message_sticker_wrap",
+    "tgme_widget_message_voice",
+    "tgme_widget_message_roundvideo",
+    "tgme_widget_message_document_wrap",
+)
+_REACTION_NUM_RE = re.compile(r"(\d+(?:[.,]\d+)?\s*[KkMmКкМм]?)\s*$")
+
+
 class _TgEngagementParser(HTMLParser):
-    """Парсит t.me/s/<канал>: текст, ссылку, время, реакции и просмотры поста."""
+    """Парсит t.me/s/<канал>: текст, ссылку, время, медиа, реакции (с эмодзи) и просмотры."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -313,10 +327,12 @@ class _TgEngagementParser(HTMLParser):
         self._text_parts: list[str] = []
         self._views_text = ""
         self._datetime = ""
-        self._reactions = 0
+        self._has_media = False
+        self._reactions: list[tuple[str, int]] = []  # [(эмодзи, счёт)]
+        self._reaction_buf: list[str] = []
         self._in_text = 0
         self._in_views = 0
-        self._in_reaction_value = 0
+        self._in_reaction = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         d = {k: (v or "") for k, v in attrs}
@@ -328,6 +344,8 @@ class _TgEngagementParser(HTMLParser):
         if not self._post_id:
             return
         void = tag in _VOID_TAGS
+        if any(m in cls for m in _MEDIA_MARKERS):
+            self._has_media = True
         if "tgme_widget_message_text" in cls:
             self._in_text = 1
             return
@@ -340,10 +358,12 @@ class _TgEngagementParser(HTMLParser):
             self._in_views = 1
         elif self._in_views and not void:
             self._in_views += 1
-        if "tgme_reaction_value" in cls:
-            self._in_reaction_value = 1
-        elif self._in_reaction_value and not void:
-            self._in_reaction_value += 1
+        # Кнопка реакции — собираем её эмодзи и счёт вместе, чтобы знать «самую массовую».
+        if tag == "a" and "tgme_reaction" in cls and "tgme_reaction_value" not in cls:
+            self._in_reaction = 1
+            self._reaction_buf = []
+        elif self._in_reaction and not void:
+            self._in_reaction += 1
         if tag == "time" and d.get("datetime") and not self._datetime:
             self._datetime = d["datetime"]
 
@@ -354,8 +374,10 @@ class _TgEngagementParser(HTMLParser):
             self._in_text -= 1
         if self._in_views:
             self._in_views -= 1
-        if self._in_reaction_value:
-            self._in_reaction_value -= 1
+        if self._in_reaction:
+            self._in_reaction -= 1
+            if self._in_reaction == 0:
+                self._finish_reaction()
 
     def handle_data(self, data: str) -> None:
         if not self._post_id:
@@ -364,8 +386,18 @@ class _TgEngagementParser(HTMLParser):
             self._text_parts.append(data)
         if self._in_views:
             self._views_text += data
-        if self._in_reaction_value:
-            self._reactions += _parse_short_number(data)
+        if self._in_reaction:
+            self._reaction_buf.append(data)
+
+    def _finish_reaction(self) -> None:
+        text = "".join(self._reaction_buf).strip()
+        m = _REACTION_NUM_RE.search(text)
+        if not m:
+            return
+        count = _parse_short_number(m.group(1))
+        emoji = text[: m.start()].strip()
+        if emoji:
+            self._reactions.append((emoji, count))
 
     def _flush(self) -> None:
         if not self._post_id:
@@ -379,14 +411,20 @@ class _TgEngagementParser(HTMLParser):
                 ).timestamp()
             except ValueError:
                 ts = 0.0
+        total_reactions = sum(c for _, c in self._reactions)
+        top_emoji = (
+            max(self._reactions, key=lambda x: x[1])[0] if self._reactions else ""
+        )
         if text:
             self.posts.append(
                 ChannelPost(
                     text=text,
                     link=f"https://t.me/{self._post_id}",
                     published=ts,
-                    reactions=self._reactions,
+                    reactions=total_reactions,
                     views=_parse_short_number(self._views_text),
+                    has_media=self._has_media,
+                    top_reaction=top_emoji,
                 )
             )
         self._reset_current()

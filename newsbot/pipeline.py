@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from . import digest, memory, rates, sources
@@ -171,14 +172,51 @@ def _tourism_section(
 
 # Канал, из которого берём «В мире» — последние самые залайканные посты за день.
 _WORLD_CHANNEL = "pezduzalive"
+# Рекламные маркеры в тексте поста. «erid» — обязательная пометка платных
+# постов в РФ; «реклам» ловит «Реклама»/«рекламный»; «промокод» — частый
+# признак рекламы товара.
+_AD_TEXT_RE = re.compile(r"реклам|\berid\b|промокод|купон", re.IGNORECASE)
+# Эмодзи-«клоун» — публика канала ставит её как пометку «это реклама».
+_AD_REACTION = "🤡"
+# Без картинки/видео пост короче этого порога обычно теряет смысл.
+_MEDIA_MIN_TEXT = 100
+
+
+def _is_pezduza_ad(post: sources.ChannelPost) -> bool:
+    if post.top_reaction == _AD_REACTION:
+        return True
+    return bool(_AD_TEXT_RE.search(post.text))
+
+
+def _is_media_dependent(post: sources.ChannelPost) -> bool:
+    """Текст слишком короткий и опирается на прикреплённое медиа — в дайджесте бесполезен."""
+    return post.has_media and len(post.text) < _MEDIA_MIN_TEXT
 
 
 def _world_section(allowed: set[str], seen: set[str]) -> digest.Section | None:
-    """«В мире» = топ-5 постов pezduzalive за последние сутки по реакциям."""
-    posts = sources.fetch_telegram_top(_WORLD_CHANNEL, hours=24, limit=5)
-    posts = [p for p in posts if p.link not in seen]
+    """«В мире» = топ-5 постов pezduzalive за сутки по реакциям, без рекламы и «голых» подписей."""
+    # Берём с запасом — после фильтрации должно остаться минимум 5 хороших постов.
+    raw = sources.fetch_telegram_top(_WORLD_CHANNEL, hours=24, limit=30)
+    posts: list[sources.ChannelPost] = []
+    skipped = {"ad": 0, "media_only": 0, "seen": 0}
+    for p in raw:
+        if p.link in seen:
+            skipped["seen"] += 1
+            continue
+        if _is_pezduza_ad(p):
+            skipped["ad"] += 1
+            continue
+        if _is_media_dependent(p):
+            skipped["media_only"] += 1
+            continue
+        posts.append(p)
+        if len(posts) >= 5:
+            break
     if not posts:
-        print(f"[pipeline] тема «🌍 В мире»: канал {_WORLD_CHANNEL} не отдал постов")
+        print(
+            f"[pipeline] тема «🌍 В мире»: канал {_WORLD_CHANNEL} не отдал годных постов "
+            f"(сырых {len(raw)}, отсеяно {skipped})"
+        )
         return None
     lines: list[str] = []
     for p in posts:
@@ -188,8 +226,8 @@ def _world_section(allowed: set[str], seen: set[str]) -> digest.Section | None:
         lines.append(f'• {excerpt} <a href="{p.link}">→</a>')
         allowed.add(p.link)
     print(
-        f"[pipeline] тема «🌍 В мире»: топ {len(posts)} постов "
-        f"(реакции/просмотры: {[(p.reactions, p.views) for p in posts]})"
+        f"[pipeline] тема «🌍 В мире»: топ {len(posts)} постов, "
+        f"отсеяно {skipped} (рекл./медиа-зависимые/видели)"
     )
     return digest.Section(title="🌍 В мире", bullets="\n".join(lines))
 
@@ -202,7 +240,9 @@ def _worldcup_section(
     now_msk: datetime,
 ) -> digest.Section | None:
     """ЧМ-2026: матчи вчера со счётом + сегодня с временем и каналом."""
-    headlines = sources.fetch_headlines(topic.feeds)
+    # Берём больше материалов на ленту — LLM должна увидеть как можно больше
+    # упоминаний разных матчей дня.
+    headlines = sources.fetch_headlines(topic.feeds, per_feed=20)
     headlines = sources.filter_by_keywords(headlines, topic.keywords)
     headlines = [h for h in headlines if h.link not in seen]
     allowed.update(h.link for h in headlines if h.link)
